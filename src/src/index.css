@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — matches the RACM precedent mockups (ROD007: concept-source
+   only, no code/data integration). Dark theme, single palette for now. */
+:root {
+  --surface-1: #212124;
+  --surface-2: #18181b;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-accent: #60a5fa;
+  --text-success: #4ade80;
+  --text-warning: #fbbf24;
+  --text-danger: #f87171;
+
+  --bg-accent: rgba(96, 165, 250, 0.16);
+  --bg-success: rgba(74, 222, 128, 0.14);
+  --bg-warning: rgba(251, 191, 36, 0.14);
+  --bg-danger: rgba(248, 113, 113, 0.14);
+
+  --fill-primary: #2563eb;
+  --fill-accent: #60a5fa;
+  --fill-warning: #fbbf24;
+  --on-primary: #ffffff;
+
+  --radius: 8px;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}

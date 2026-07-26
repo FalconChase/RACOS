@@ -1,0 +1,6 @@
+# Obsidian vault config (personal, not project source)
+.obsidian/
+
+# OS cruft
+.DS_Store
+Thumbs.db
