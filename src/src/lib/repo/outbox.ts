@@ -1,7 +1,7 @@
 import { getDb } from "../db";
 import type Database from "@tauri-apps/plugin-sql";
 
-export type OutboxTable = "vehicles" | "customers" | "bookings" | "payments";
+export type OutboxTable = "vehicles" | "customers" | "bookings" | "payments" | "owners";
 export type OutboxOp = "insert" | "update" | "delete";
 
 // Feeds the "N pending sync" badge — count of mutations not yet pushed to Supabase.

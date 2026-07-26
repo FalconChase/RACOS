@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelBooking, createBooking, listBookings } from "../lib/repo/bookings";
+import { cancelBooking, createBooking, listBookings, markBookingDeparted, markBookingReturned } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { createCustomer, listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -7,12 +7,13 @@ import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/r
 import { bookingRef } from "../lib/bookingRef";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
-import { formatDuration, halfDaysBetween } from "../lib/duration";
+import { exactHoursBetween, formatDuration, formatHoursMinutes } from "../lib/duration";
 import { computeTier, findSeatingBand, resolveRate } from "../lib/pricing";
 import DatePicker from "../components/DatePicker";
 import TimePicker from "../components/TimePicker";
 import FormQuestion from "../components/FormQuestion";
 import SearchableSelect from "../components/SearchableSelect";
+import ArrivalDialog from "../components/ArrivalDialog";
 import type {
   Booking,
   BookingStatus,
@@ -55,6 +56,13 @@ interface BookingsScreenProps {
   onCheckout: (bookingId: string) => void;
 }
 
+// Trims float noise from hourly-rate math (e.g. 81.5h x rate/24) without
+// forcing pesos-only display — keeps up to 2 decimals, drops them if unused.
+function formatMoney(n: number): string {
+  const rounded = Math.round(n * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
 function combineDateTime(date: string, time: string): Date | null {
   if (!date || !time) return null;
   const d = new Date(`${date}T${time}`);
@@ -74,12 +82,30 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   const [customRates, setCustomRates] = useState<CustomRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  // Finished/cancelled rentals file themselves into History automatically —
-  // staff land there by default since that's usually what they're checking
-  // when they open Rentals; ongoing work-in-progress bookings get their own
-  // subtab, and the Home dashboard only ever shows the ongoing set.
-  const [subtab, setSubtab] = useState<Subtab>("history");
+  // Ongoing (pending/confirmed/active) rentals is what staff almost always
+  // want to see first when opening Rentals — completed/cancelled bookings
+  // file into their own History subtab instead.
+  const [subtab, setSubtab] = useState<Subtab>("ongoing");
   const [confirmingCancelId, setConfirmingCancelId] = useState<string | null>(null);
+  // Shown at Save time when the entered due-back is already in the past — lets
+  // staff resolve whether the vehicle already came back before the booking is
+  // written at all. eta is the due-back ISO the dialog displays/offers as
+  // "same as due-back".
+  const [arrivalDialogEta, setArrivalDialogEta] = useState<string | null>(null);
+  // The general "Mark returned" / "Mark departed" actions on an already-recorded
+  // booking — same dialog component (different kind), reusing the same
+  // underlying mechanism as the Save-time confirmation above.
+  const [markReturnedFor, setMarkReturnedFor] = useState<Booking | null>(null);
+  const [markDepartedFor, setMarkDepartedFor] = useState<Booking | null>(null);
+
+  // Live clock driving the overdue-return / departure-due badges below —
+  // ticks every second so their duration readouts stay current without a
+  // manual refresh.
+  const [nowTick, setNowTick] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const [vehicleId, setVehicleId] = useState("");
   const [destinationProvinceId, setDestinationProvinceId] = useState("");
@@ -146,6 +172,14 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     return formatDuration(startDT, endDT, settings.durationDisplay);
   }, [startDT, endDT, dateOrderInvalid, settings.durationDisplay]);
 
+  // Exact, unrounded reading of the Out/Due back span — shown alongside
+  // whatever duration wording Settings > Rental has picked (nights, half-days,
+  // etc.), regardless of that choice. Purely informational.
+  const exactDurationText = useMemo(() => {
+    if (!startDT || !endDT || dateOrderInvalid) return null;
+    return formatHoursMinutes(startDT, endDT);
+  }, [startDT, endDT, dateOrderInvalid]);
+
   // Destination search is province-first: pick a province (required), then
   // optionally narrow down to a specific city/municipality within it. Every
   // municipality is selectable — no admin pre-registration or toggle needed.
@@ -167,9 +201,9 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     setDestinationCityId("");
   }
 
-  // Computed silently in the background — half-days x half the resolved rate
-  // (custom city rate first, then Rate Matrix, then vehicle's own daily
-  // rate). Never written into the visible Payment field.
+  // Computed silently in the background — exact hours x the resolved
+  // per-hour rate (custom city rate first, then Rate Matrix, then vehicle's
+  // own daily rate). Never written into the visible Payment field.
   const resolvedRate = useMemo(() => {
     if (!selectedVehicle) return null;
     return resolveRate({
@@ -184,15 +218,16 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     });
   }, [selectedVehicle, destinationProvinceId, destinationCityId, businessProfile, provinces, seatingBands, rateMatrix, customRates]);
 
+  // Billed on the exact Out/Due back span (dailyRate / 24 x exact hours) — no
+  // half-day or nightly rounding at all. Rounded UP to the nearest 50 so the
+  // per-hour math never surfaces messy decimals (e.g. 2041.67 -> 2050).
   const expectedPayment = useMemo(() => {
     if (!startDT || !endDT || dateOrderInvalid || !resolvedRate) return null;
     const rate = Number(resolvedRate.rate);
     if (!Number.isFinite(rate)) return null;
-    // Billed per half-day, at half the resolved (daily) rate — matches the
-    // half-day granularity already shown in the Rental period hint, instead
-    // of rounding up to a full extra night.
-    const halfDays = halfDaysBetween(startDT, endDT);
-    return (rate / 2) * halfDays;
+    const exactHours = exactHoursBetween(startDT, endDT);
+    const raw = (rate / 24) * exactHours;
+    return Math.ceil(raw / 50) * 50;
   }, [startDT, endDT, dateOrderInvalid, resolvedRate]);
 
   // Reference-only rate card for whatever seating band the selected vehicle
@@ -240,9 +275,12 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     !dateOrderInvalid &&
     (isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId));
 
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canSubmit || !startDT || !endDT) return;
+  // Does the actual save, once we know whether arrival needs to be resolved:
+  // actualReturnAt is null for a normal save (not backdated, or staff picked
+  // "not yet returned"), or an ISO timestamp when the confirmation dialog
+  // resolved it as already back.
+  async function saveBooking(actualReturnAt: string | null) {
+    if (!startDT || !endDT) return;
 
     let finalCustomerId = customerId;
     if (isNewCustomer) {
@@ -265,9 +303,25 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
       payment_amount: paymentAmount.trim() || undefined,
       expected_payment: expectedPayment !== null ? String(expectedPayment) : undefined,
       purpose: purpose.trim() || undefined,
+      actual_return_at: actualReturnAt ?? undefined,
     });
     resetForm();
+    setArrivalDialogEta(null);
     await refresh();
+  }
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit || !startDT || !endDT) return;
+
+    // Due-back already elapsed — staff needs to say whether the vehicle is
+    // already back (and when) before this gets written as a live rental.
+    if (endDT.getTime() < Date.now()) {
+      setArrivalDialogEta(endDT.toISOString());
+      return;
+    }
+
+    await saveBooking(null);
   }
 
   async function handleCancel(id: string) {
@@ -428,7 +482,10 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
               dateOrderInvalid ? (
                 <span style={{ color: "var(--text-danger)" }}>Due back must be after the out date/time.</span>
               ) : durationText ? (
-                <span>{durationText}</span>
+                <span>
+                  {durationText}
+                  {exactDurationText && ` · ${exactDurationText}`}
+                </span>
               ) : null
             }
           >
@@ -476,6 +533,14 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
                 {resolvedRate?.basis === "vehicle" && (
                   <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
                     No Rate Matrix match — using this vehicle's own rate: {resolvedRate.rate}
+                  </p>
+                )}
+                {settings.showExpectedPayment && expectedPayment !== null && (
+                  <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
+                    Expected payment: {formatMoney(expectedPayment)}
+                    {resolvedRate?.basis === "matrix"
+                      ? ` (Tier ${resolvedRate.tier} · ${resolvedRate.band?.label})`
+                      : ""}
                   </p>
                 )}
               </div>
@@ -531,71 +596,157 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
             </tr>
           </thead>
           <tbody>
-            {visibleBookings.map((b) => (
-              <tr key={b.id}>
-                <td className="px-3 py-2.5 font-mono text-sm" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{bookingRef(b.id)}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{vehicleLabel(b.vehicle_id)}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{customerLabel(b.customer_id)}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(b.start_date, settings)}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(b.end_date, settings)}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
-                  <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={STATUS_STYLES[b.status]}>
-                    {b.status}
-                  </span>
-                  {b.pending_availability_check === 1 && (
-                    <span className="ml-1 rounded-full px-3 py-1.5 text-sm font-medium" style={{ background: "var(--bg-warning)", color: "var(--text-warning)" }}>
-                      awaiting availability check
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
-                  <div className="flex justify-end gap-3">
-                    {confirmingCancelId === b.id ? (
+            {visibleBookings.map((b) => {
+              // Overdue return: active, arrival unresolved, due-back already
+              // elapsed. Departure due: still pending, scheduled ETD already
+              // elapsed and nobody's confirmed it left yet. Both are purely
+              // computed for display — the stored status/columns are untouched
+              // until staff actually act on Mark returned/Mark departed.
+              const isOverdueReturn = b.status === "active" && new Date(b.end_date).getTime() < nowTick.getTime();
+              const isDepartureDue = b.status === "pending" && new Date(b.start_date).getTime() <= nowTick.getTime();
+
+              return (
+                <tr key={b.id}>
+                  <td className="px-3 py-2.5 font-mono text-sm" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{bookingRef(b.id)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{vehicleLabel(b.vehicle_id)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{customerLabel(b.customer_id)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(b.start_date, settings)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(b.end_date, settings)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
+                    {isOverdueReturn ? (
                       <>
-                        <span className="text-sm" style={{ color: "var(--text-danger)" }}>Cancel this booking?</span>
-                        <button
-                          onClick={() => handleCancel(b.id)}
-                          className="text-sm font-medium"
-                          style={{ color: "var(--text-danger)" }}
-                        >
-                          Yes, cancel
-                        </button>
-                        <button
-                          onClick={() => setConfirmingCancelId(null)}
-                          className="text-sm font-medium"
-                          style={{ color: "var(--text-secondary)" }}
-                        >
-                          No
-                        </button>
+                        <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}>
+                          overdue
+                        </span>
+                        <div className="mt-1 text-sm" style={{ color: "var(--text-danger)" }}>
+                          {formatHoursMinutes(new Date(b.end_date), nowTick)} overdue
+                        </div>
+                      </>
+                    ) : isDepartureDue ? (
+                      <>
+                        <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={{ background: "var(--bg-warning)", color: "var(--text-warning)" }}>
+                          departure due
+                        </span>
+                        <div className="mt-1 text-sm" style={{ color: "var(--text-warning)" }}>
+                          {formatHoursMinutes(new Date(b.start_date), nowTick)} since scheduled
+                        </div>
                       </>
                     ) : (
-                      <>
-                        {(b.status === "pending" || b.status === "confirmed") && (
+                      <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={STATUS_STYLES[b.status]}>
+                        {b.status}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
+                    <div className="flex justify-end gap-3">
+                      {confirmingCancelId === b.id ? (
+                        <>
+                          <span className="text-sm" style={{ color: "var(--text-danger)" }}>Cancel this booking?</span>
                           <button
-                            onClick={() => onCheckout(b.id)}
-                            className="text-sm font-medium"
-                            style={{ color: "var(--text-accent)" }}
-                          >
-                            Check-out
-                          </button>
-                        )}
-                        {b.status !== "cancelled" && b.status !== "completed" && (
-                          <button
-                            onClick={() => setConfirmingCancelId(b.id)}
+                            onClick={() => handleCancel(b.id)}
                             className="text-sm font-medium"
                             style={{ color: "var(--text-danger)" }}
                           >
-                            Cancel
+                            Yes, cancel
                           </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                          <button
+                            onClick={() => setConfirmingCancelId(null)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-secondary)" }}
+                          >
+                            No
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {(b.status === "pending" || b.status === "confirmed") && (
+                            <button
+                              onClick={() => onCheckout(b.id)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-accent)" }}
+                            >
+                              Check-out
+                            </button>
+                          )}
+                          {b.status === "pending" && (
+                            <button
+                              onClick={() => setMarkDepartedFor(b)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-success)" }}
+                            >
+                              Mark departed
+                            </button>
+                          )}
+                          {b.status === "active" && (
+                            <button
+                              onClick={() => setMarkReturnedFor(b)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-success)" }}
+                            >
+                              Mark returned
+                            </button>
+                          )}
+                          {b.status !== "cancelled" && b.status !== "completed" && (
+                            <button
+                              onClick={() => setConfirmingCancelId(b.id)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-danger)" }}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      )}
+
+      {arrivalDialogEta && (
+        <ArrivalDialog
+          kind="arrival"
+          mode="create"
+          scheduledIso={arrivalDialogEta}
+          settings={settings}
+          onCancel={() => setArrivalDialogEta(null)}
+          onConfirm={(actualReturnAt) => saveBooking(actualReturnAt)}
+        />
+      )}
+
+      {markReturnedFor && (
+        <ArrivalDialog
+          kind="arrival"
+          mode="confirm"
+          scheduledIso={markReturnedFor.end_date}
+          settings={settings}
+          onCancel={() => setMarkReturnedFor(null)}
+          onConfirm={async (actualReturnAt) => {
+            if (!actualReturnAt) return;
+            await markBookingReturned(markReturnedFor.id, actualReturnAt);
+            setMarkReturnedFor(null);
+            await refresh();
+          }}
+        />
+      )}
+
+      {markDepartedFor && (
+        <ArrivalDialog
+          kind="departure"
+          mode="confirm"
+          scheduledIso={markDepartedFor.start_date}
+          settings={settings}
+          onCancel={() => setMarkDepartedFor(null)}
+          onConfirm={async (actualDepartureAt) => {
+            if (!actualDepartureAt) return;
+            await markBookingDeparted(markDepartedFor.id, actualDepartureAt);
+            setMarkDepartedFor(null);
+            await refresh();
+          }}
+        />
       )}
     </div>
   );

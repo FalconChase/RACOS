@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  createVehicle,
   deleteVehicle,
   listVehicles,
+  updateVehicle,
   updateVehicleStatus,
 } from "../lib/repo/vehicles";
-import type { Vehicle, VehicleStatus } from "../lib/types";
+import { listOwners } from "../lib/repo/owners";
+import type { Owner, Vehicle, VehicleStatus } from "../lib/types";
 
 const STATUS_STYLES: Record<VehicleStatus, React.CSSProperties> = {
   available: { background: "var(--bg-success)", color: "var(--text-success)" },
@@ -20,20 +21,22 @@ const inputStyle: React.CSSProperties = {
   color: "var(--text-primary)",
 };
 
-export default function VehiclesScreen() {
+interface VehiclesScreenProps {
+  onNavigateToRegistry?: () => void;
+}
+
+export default function VehiclesScreen({ onNavigateToRegistry }: VehiclesScreenProps) {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [owners, setOwners] = useState<Owner[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [plateNumber, setPlateNumber] = useState("");
-  const [make, setMake] = useState("");
-  const [model, setModel] = useState("");
-  const [year, setYear] = useState("");
-  const [dailyRate, setDailyRate] = useState("");
-  const [seats, setSeats] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function refresh() {
     setLoading(true);
-    setVehicles(await listVehicles());
+    const [v, o] = await Promise.all([listVehicles(), listOwners()]);
+    setVehicles(v);
+    setOwners(o);
     setLoading(false);
   }
 
@@ -41,25 +44,9 @@ export default function VehiclesScreen() {
     refresh();
   }, []);
 
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault();
-    if (!plateNumber.trim()) return;
-    await createVehicle({
-      plate_number: plateNumber.trim(),
-      make: make.trim() || undefined,
-      model: model.trim() || undefined,
-      year: year ? Number(year) : undefined,
-      daily_rate: dailyRate.trim() || undefined,
-      seats: seats ? Number(seats) : undefined,
-    });
-    setPlateNumber("");
-    setMake("");
-    setModel("");
-    setYear("");
-    setDailyRate("");
-    setSeats("");
-    setShowForm(false);
-    await refresh();
+  function ownerLabel(id: string | null) {
+    if (!id) return "—";
+    return owners.find((o) => o.id === id)?.full_name ?? "—";
   }
 
   async function handleStatusChange(id: string, status: VehicleStatus) {
@@ -68,82 +55,37 @@ export default function VehiclesScreen() {
   }
 
   async function handleDelete(id: string) {
-    await deleteVehicle(id);
-    await refresh();
+    setDeleteError(null);
+    try {
+      await deleteVehicle(id);
+      await refresh();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button
-          onClick={() => setShowForm((s) => !s)}
-          className="rounded px-5 py-2 text-base font-bold uppercase tracking-wide"
-          style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+      {deleteError && (
+        <div
+          className="flex items-start justify-between gap-4 rounded-md p-3 text-sm"
+          style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
         >
-          {showForm ? "Cancel" : "Record vehicle"}
-        </button>
-      </div>
-
-      {showForm && (
-        <form
-          onSubmit={handleAdd}
-          className="grid grid-cols-2 gap-3 rounded-md p-4 sm:grid-cols-6"
-          style={{ border: "0.5px solid var(--border)" }}
-        >
-          <input
-            className="col-span-2 rounded-md px-3 py-2.5 text-base sm:col-span-1"
-            style={inputStyle}
-            placeholder="Plate number *"
-            value={plateNumber}
-            onChange={(e) => setPlateNumber(e.target.value)}
-            required
-          />
-          <input
-            className="rounded-md px-3 py-2.5 text-base"
-            style={inputStyle}
-            placeholder="Make"
-            value={make}
-            onChange={(e) => setMake(e.target.value)}
-          />
-          <input
-            className="rounded-md px-3 py-2.5 text-base"
-            style={inputStyle}
-            placeholder="Model"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-          <input
-            className="rounded-md px-3 py-2.5 text-base"
-            style={inputStyle}
-            placeholder="Year"
-            type="number"
-            value={year}
-            onChange={(e) => setYear(e.target.value)}
-          />
-          <input
-            className="rounded-md px-3 py-2.5 text-base"
-            style={inputStyle}
-            placeholder="Seats"
-            type="number"
-            value={seats}
-            onChange={(e) => setSeats(e.target.value)}
-          />
-          <input
-            className="rounded-md px-3 py-2.5 text-base"
-            style={inputStyle}
-            placeholder="Daily rate (fallback)"
-            value={dailyRate}
-            onChange={(e) => setDailyRate(e.target.value)}
-          />
-          <button
-            type="submit"
-            className="col-span-2 rounded-md px-3 py-1.5 text-base font-medium sm:col-span-6"
-            style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
-          >
-            Save
+          <span>{deleteError}</span>
+          <button onClick={() => setDeleteError(null)} className="shrink-0 font-medium">
+            Dismiss
           </button>
-        </form>
+        </div>
       )}
+
+      <div className="flex items-center justify-between gap-4 rounded-md p-3 text-sm" style={{ background: "var(--surface-1)", color: "var(--text-muted)" }}>
+        <span>New vehicles are registered together with their owner from the Registry tab.</span>
+        {onNavigateToRegistry && (
+          <button onClick={onNavigateToRegistry} className="shrink-0 text-sm font-medium" style={{ color: "var(--text-accent)" }}>
+            Go to Registry
+          </button>
+        )}
+      </div>
 
       {loading ? (
         <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
@@ -157,48 +99,178 @@ export default function VehiclesScreen() {
               <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Make / model</th>
               <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Year</th>
               <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Seats</th>
-              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Daily rate</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Owner</th>
               <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Status</th>
               <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)" }}></th>
             </tr>
           </thead>
           <tbody>
-            {vehicles.map((v) => (
-              <tr key={v.id}>
-                <td className="px-3 py-2.5 font-medium" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{v.plate_number}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
-                  {[v.make, v.model].filter(Boolean).join(" ") || "—"}
-                </td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.year ?? "—"}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.seats ?? "—"}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.daily_rate ?? "—"}</td>
-                <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
-                  <select
-                    value={v.status}
-                    onChange={(e) => handleStatusChange(v.id, e.target.value as VehicleStatus)}
-                    className="rounded-full border-0 px-3 py-1.5 text-sm font-medium"
-                    style={STATUS_STYLES[v.status]}
-                  >
-                    <option value="available">available</option>
-                    <option value="rented">rented</option>
-                    <option value="maintenance">maintenance</option>
-                    <option value="retired">retired</option>
-                  </select>
-                </td>
-                <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
-                  <button
-                    onClick={() => handleDelete(v.id)}
-                    className="text-sm font-medium"
-                    style={{ color: "var(--text-danger)" }}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {vehicles.map((v) =>
+              editingId === v.id ? (
+                <VehicleEditRow
+                  key={v.id}
+                  vehicle={v}
+                  owners={owners}
+                  onCancel={() => setEditingId(null)}
+                  onSaved={async () => {
+                    setEditingId(null);
+                    await refresh();
+                  }}
+                />
+              ) : (
+                <tr key={v.id}>
+                  <td className="px-3 py-2.5 font-medium" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{v.plate_number}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
+                    {[v.make, v.model].filter(Boolean).join(" ") || "—"}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.year ?? "—"}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.seats ?? "—"}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{ownerLabel(v.owner_id)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
+                    <select
+                      value={v.status}
+                      onChange={(e) => handleStatusChange(v.id, e.target.value as VehicleStatus)}
+                      className="rounded-full border-0 px-3 py-1.5 text-sm font-medium"
+                      style={STATUS_STYLES[v.status]}
+                    >
+                      <option value="available">available</option>
+                      <option value="rented">rented</option>
+                      <option value="maintenance">maintenance</option>
+                      <option value="retired">retired</option>
+                    </select>
+                  </td>
+                  <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setEditingId(v.id)}
+                        className="text-sm font-medium"
+                        style={{ color: "var(--text-accent)" }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDelete(v.id)}
+                        className="text-sm font-medium"
+                        style={{ color: "var(--text-danger)" }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ),
+            )}
           </tbody>
         </table>
       )}
     </div>
+  );
+}
+
+function VehicleEditRow({
+  vehicle,
+  owners,
+  onCancel,
+  onSaved,
+}: {
+  vehicle: Vehicle;
+  owners: Owner[];
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [plateNumber, setPlateNumber] = useState(vehicle.plate_number);
+  const [make, setMake] = useState(vehicle.make ?? "");
+  const [model, setModel] = useState(vehicle.model ?? "");
+  const [year, setYear] = useState(vehicle.year != null ? String(vehicle.year) : "");
+  const [seats, setSeats] = useState(vehicle.seats != null ? String(vehicle.seats) : "");
+  const [ownerId, setOwnerId] = useState(vehicle.owner_id ?? "");
+  const [chassisNumber, setChassisNumber] = useState(vehicle.chassis_number ?? "");
+  const [engineNumber, setEngineNumber] = useState(vehicle.engine_number ?? "");
+  const [gpsDeviceId, setGpsDeviceId] = useState(vehicle.gps_device_id ?? "");
+  const [gpsProvider, setGpsProvider] = useState(vehicle.gps_provider ?? "");
+  const [gpsNotes, setGpsNotes] = useState(vehicle.gps_notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const canSave = useMemo(
+    () => Boolean(plateNumber.trim()) && Boolean(make.trim()) && Boolean(model.trim()) && Boolean(seats.trim()) && Boolean(ownerId),
+    [plateNumber, make, model, seats, ownerId],
+  );
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaveError(null);
+    setSaving(true);
+    try {
+      await updateVehicle(vehicle.id, {
+        plate_number: plateNumber.trim(),
+        make: make.trim(),
+        model: model.trim(),
+        year: year.trim() ? Number(year) : null,
+        seats: Number(seats),
+        owner_id: ownerId,
+        chassis_number: chassisNumber.trim() || null,
+        engine_number: engineNumber.trim() || null,
+        gps_device_id: gpsDeviceId.trim() || null,
+        gps_provider: gpsProvider.trim() || null,
+        gps_notes: gpsNotes.trim() || null,
+      });
+      onSaved();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td colSpan={7} className="p-0" style={{ border: "0.5px solid var(--border)" }}>
+        <div className="space-y-3 p-4" style={{ background: "var(--surface-1)" }}>
+          {saveError && (
+            <div
+              className="flex items-start justify-between gap-4 rounded-md p-3 text-sm"
+              style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
+            >
+              <span>{saveError}</span>
+              <button onClick={() => setSaveError(null)} className="shrink-0 font-medium">
+                Dismiss
+              </button>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Plate number *" value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Make *" value={make} onChange={(e) => setMake(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Model *" value={model} onChange={(e) => setModel(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Year" type="number" value={year} onChange={(e) => setYear(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Seats *" type="number" min={1} value={seats} onChange={(e) => setSeats(e.target.value)} />
+            <select className="rounded-md px-3 py-2.5 text-base" style={inputStyle} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">Owner *</option>
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>{o.full_name}</option>
+              ))}
+            </select>
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Chassis number" value={chassisNumber} onChange={(e) => setChassisNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Engine number" value={engineNumber} onChange={(e) => setEngineNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS device ID" value={gpsDeviceId} onChange={(e) => setGpsDeviceId(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS provider" value={gpsProvider} onChange={(e) => setGpsProvider(e.target.value)} />
+            <input className="col-span-2 rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS notes" value={gpsNotes} onChange={(e) => setGpsNotes(e.target.value)} />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              disabled={saving || !canSave}
+              className="rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button onClick={onCancel} className="rounded-md px-4 py-2 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
   );
 }

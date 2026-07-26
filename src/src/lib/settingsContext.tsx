@@ -8,6 +8,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   timeFormat: "12h",
   durationDisplay: "nights",
   showExpectedPayment: false,
+  dashLabelUnit: false,
+  dashLabelLessee: false,
+  dashLabelEtd: false,
+  dashLabelEta: false,
 };
 
 interface SettingsContextValue {

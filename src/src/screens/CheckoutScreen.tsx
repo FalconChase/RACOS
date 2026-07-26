@@ -8,7 +8,7 @@ import { ChevronRightIcon, CheckIcon, FileTextIcon, LockIcon } from "../componen
 import { bookingRef } from "../lib/bookingRef";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
-import { formatDuration, halfDaysBetween } from "../lib/duration";
+import { formatDuration, formatHoursMinutes } from "../lib/duration";
 import { resolveRate, type ResolvedRate } from "../lib/pricing";
 import type { AppSettings, Booking, Customer, Municipality, Province, Vehicle } from "../lib/types";
 
@@ -85,7 +85,7 @@ export default function CheckoutScreen({ bookingId, onBack }: CheckoutScreenProp
     return <p className="text-sm" style={{ color: "var(--text-danger)" }}>Booking not found.</p>;
   }
 
-  const halfDays = halfDaysBetween(new Date(booking.start_date), new Date(booking.end_date));
+  const exactDurationText = formatHoursMinutes(new Date(booking.start_date), new Date(booking.end_date));
 
   return (
     <div className="rounded-md" style={{ border: "0.5px solid var(--border)", background: "var(--surface-2)" }}>
@@ -156,7 +156,7 @@ export default function CheckoutScreen({ bookingId, onBack }: CheckoutScreenProp
               destinationProvince={destinationProvince}
               destinationCity={destinationCity}
               resolvedRate={resolvedRate}
-              halfDays={halfDays}
+              exactDurationText={exactDurationText}
               settings={settings}
               onNext={() => setStep(1)}
             />
@@ -205,7 +205,7 @@ function DetailsStep({
   destinationProvince,
   destinationCity,
   resolvedRate,
-  halfDays,
+  exactDurationText,
   settings,
   onNext,
 }: {
@@ -214,7 +214,7 @@ function DetailsStep({
   destinationProvince: Province | null;
   destinationCity: Municipality | null;
   resolvedRate: ResolvedRate | null;
-  halfDays: number;
+  exactDurationText: string;
   settings: AppSettings;
   onNext: () => void;
 }) {
@@ -253,9 +253,7 @@ function DetailsStep({
             label="Rate"
             value={
               resolvedRate
-                ? `${halfDays} half-day${halfDays === 1 ? "" : "s"} × ${
-                    Number.isFinite(Number(resolvedRate.rate)) ? Number(resolvedRate.rate) / 2 : resolvedRate.rate
-                  }${
+                ? `${exactDurationText} @ ${resolvedRate.rate}/day${
                     resolvedRate.basis === "custom"
                       ? ` (custom rate · ${resolvedRate.band?.label})`
                       : resolvedRate.basis === "matrix"

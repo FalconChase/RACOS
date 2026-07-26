@@ -1,5 +1,6 @@
 import { getDb, currentBusinessId } from "../db";
 import { queueOutbox } from "./outbox";
+import { diffField, logAction } from "./actionLog";
 import type { Vehicle, VehicleStatus } from "../types";
 
 export async function listVehicles(): Promise<Vehicle[]> {
@@ -18,11 +19,21 @@ export async function getVehicleById(id: string): Promise<Vehicle | null> {
 
 export interface NewVehicleInput {
   plate_number: string;
-  make?: string;
-  model?: string;
+  make: string;
+  model: string;
   year?: number;
-  daily_rate?: string;
-  seats?: number;
+  // Determines the seating band (and therefore the Rate Matrix row) this
+  // vehicle prices against — required now that daily_rate is no longer
+  // collected on this form.
+  seats: number;
+  // Every vehicle must be tied to a registered owner going forward.
+  owner_id: string;
+  // Optional at intake (Registry form), editable later via updateVehicle.
+  chassis_number?: string;
+  engine_number?: string;
+  gps_device_id?: string;
+  gps_provider?: string;
+  gps_notes?: string;
 }
 
 export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
@@ -35,20 +46,30 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
     id,
     business_id,
     plate_number: input.plate_number,
-    make: input.make ?? null,
-    model: input.model ?? null,
+    make: input.make,
+    model: input.model,
     year: input.year ?? null,
     status: "available",
-    daily_rate: input.daily_rate ?? null,
-    seats: input.seats ?? null,
+    // No longer collected on the registration form — the Rate Matrix owns
+    // pricing now. Stays null; the "vehicle's own rate" fallback in
+    // resolveRate only ever applies to legacy vehicles that already had one.
+    daily_rate: null,
+    seats: input.seats,
+    owner_id: input.owner_id,
+    chassis_number: input.chassis_number ?? null,
+    engine_number: input.engine_number ?? null,
+    gps_device_id: input.gps_device_id ?? null,
+    gps_provider: input.gps_provider ?? null,
+    gps_notes: input.gps_notes ?? null,
     created_at: now,
     updated_at: now,
   };
 
   await db.execute(
     `insert into vehicles
-       (id, business_id, plate_number, make, model, year, status, daily_rate, seats, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, business_id, plate_number, make, model, year, status, daily_rate, seats, owner_id,
+        chassis_number, engine_number, gps_device_id, gps_provider, gps_notes, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       vehicle.id,
       vehicle.business_id,
@@ -59,13 +80,102 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
       vehicle.status,
       vehicle.daily_rate,
       vehicle.seats,
+      vehicle.owner_id,
+      vehicle.chassis_number,
+      vehicle.engine_number,
+      vehicle.gps_device_id,
+      vehicle.gps_provider,
+      vehicle.gps_notes,
       vehicle.created_at,
       vehicle.updated_at,
     ],
   );
 
   await queueOutbox(db, "vehicles", id, "insert", vehicle as unknown as Record<string, unknown>);
+  await logAction({ entityType: "vehicle", entityId: id, entityLabel: vehicle.plate_number, action: "created" });
   return vehicle;
+}
+
+// Partial update — only the fields present in `patch` are changed. Every
+// field that actually differs from the current row is written to
+// action_logs (Settings > Action History).
+export interface UpdateVehicleInput {
+  plate_number?: string;
+  make?: string;
+  model?: string;
+  year?: number | null;
+  seats?: number;
+  owner_id?: string;
+  chassis_number?: string | null;
+  engine_number?: string | null;
+  gps_device_id?: string | null;
+  gps_provider?: string | null;
+  gps_notes?: string | null;
+}
+
+const VEHICLE_FIELD_LABELS: Record<keyof UpdateVehicleInput, string> = {
+  plate_number: "Plate number",
+  make: "Make",
+  model: "Model",
+  year: "Year",
+  seats: "Seats",
+  owner_id: "Owner",
+  chassis_number: "Chassis number",
+  engine_number: "Engine number",
+  gps_device_id: "GPS device ID",
+  gps_provider: "GPS provider",
+  gps_notes: "GPS notes",
+};
+
+export async function updateVehicle(id: string, patch: UpdateVehicleInput): Promise<Vehicle> {
+  const db = await getDb();
+  const current = await getVehicleById(id);
+  if (!current) throw new Error("Vehicle not found.");
+
+  const now = new Date().toISOString();
+  const next: Vehicle = { ...current, ...patch, updated_at: now };
+
+  const changes = (Object.keys(patch) as (keyof UpdateVehicleInput)[])
+    .map((field) => {
+      const oldValue = current[field];
+      const newValue = patch[field];
+      return diffField(
+        field,
+        VEHICLE_FIELD_LABELS[field],
+        oldValue === null || oldValue === undefined ? null : String(oldValue),
+        newValue === null || newValue === undefined ? null : String(newValue),
+      );
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+
+  await db.execute(
+    `update vehicles
+        set plate_number = ?, make = ?, model = ?, year = ?, seats = ?, owner_id = ?,
+            chassis_number = ?, engine_number = ?, gps_device_id = ?, gps_provider = ?, gps_notes = ?,
+            updated_at = ?
+      where id = ?`,
+    [
+      next.plate_number,
+      next.make,
+      next.model,
+      next.year,
+      next.seats,
+      next.owner_id,
+      next.chassis_number,
+      next.engine_number,
+      next.gps_device_id,
+      next.gps_provider,
+      next.gps_notes,
+      next.updated_at,
+      id,
+    ],
+  );
+
+  await queueOutbox(db, "vehicles", id, "update", next as unknown as Record<string, unknown>);
+  if (changes.length > 0) {
+    await logAction({ entityType: "vehicle", entityId: id, entityLabel: next.plate_number, action: "updated", changes });
+  }
+  return next;
 }
 
 export async function updateVehicleStatus(id: string, status: VehicleStatus): Promise<void> {
@@ -77,8 +187,52 @@ export async function updateVehicleStatus(id: string, status: VehicleStatus): Pr
   if (rows[0]) await queueOutbox(db, "vehicles", id, "update", rows[0] as unknown as Record<string, unknown>);
 }
 
-export async function deleteVehicle(id: string): Promise<void> {
+// Statuses that count as "this vehicle is actively booked" for the deletion
+// guard below — mirrors ONGOING_STATUSES in BookingsScreen.tsx.
+const ACTIVE_BOOKING_STATUSES = ["pending", "confirmed", "active"];
+
+export async function countActiveBookingsForVehicle(vehicleId: string): Promise<number> {
   const db = await getDb();
-  await db.execute("delete from vehicles where id = ?", [id]);
+  const rows = await db.select<{ count: number }[]>(
+    `select count(*) as count from bookings
+     where vehicle_id = ? and status in (${ACTIVE_BOOKING_STATUSES.map(() => "?").join(", ")})`,
+    [vehicleId, ...ACTIVE_BOOKING_STATUSES],
+  );
+  return rows[0]?.count ?? 0;
+}
+
+export class VehicleHasActiveBookingsError extends Error {
+  count: number;
+  constructor(count: number) {
+    super(`Cannot delete — ${count} active booking${count === 1 ? "" : "s"} still reference this vehicle.`);
+    this.name = "VehicleHasActiveBookingsError";
+    this.count = count;
+  }
+}
+
+export async function deleteVehicle(id: string): Promise<void> {
+  // Guard: block deletion outright while this vehicle is actually out on (or
+  // holding) a rental — pending/confirmed/active bookings. Completed/cancelled
+  // history doesn't block this check, but see the catch below: the bookings
+  // table's vehicle_id FK is NOT NULL with no ON DELETE clause, so SQLite
+  // still refuses the physical delete while ANY booking row (including
+  // history) references this vehicle.
+  const activeCount = await countActiveBookingsForVehicle(id);
+  if (activeCount > 0) {
+    throw new VehicleHasActiveBookingsError(activeCount);
+  }
+
+  const db = await getDb();
+  try {
+    await db.execute("delete from vehicles where id = ?", [id]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes("foreign key")) {
+      throw new Error(
+        "Cannot delete — this vehicle still has booking history (completed/cancelled) on file, and removing it would break those records. Clear booking history first (Settings > Reset test data), or mark this vehicle Retired instead of deleting it.",
+      );
+    }
+    throw err;
+  }
   await queueOutbox(db, "vehicles", id, "delete", null);
 }

@@ -14,13 +14,73 @@ export interface Vehicle {
   status: VehicleStatus;
   // Fallback rate only — used when a booking has no destination yet, or when
   // seats/destination don't resolve to a Rate Matrix cell. Otherwise pricing
-  // comes from the Rate Matrix (seating band x destination tier).
+  // comes from the Rate Matrix (seating band x destination tier). No longer
+  // collected on the vehicle registration form (rate matrix owns pricing
+  // now) — stays null for every vehicle created going forward.
   daily_rate: string | null;
   // Seating capacity — determines which seating band (and therefore which
-  // Rate Matrix row) this vehicle prices against.
+  // Rate Matrix row) this vehicle prices against. Required by the vehicle
+  // form going forward.
   seats: number | null;
+  // Which registered owner this vehicle belongs to. Required by the vehicle
+  // form going forward (see NewVehicleInput in lib/repo/vehicles.ts) —
+  // nullable at the DB level for safe rows created before this existed, same
+  // pattern as bookings.destination_province_id.
+  owner_id: string | null;
+  // Everything below is optional at intake on the Registry form and
+  // editable later — any edit is written to action_logs (see lib/repo/actionLog.ts).
+  chassis_number: string | null;
+  engine_number: string | null;
+  gps_device_id: string | null;
+  gps_provider: string | null;
+  gps_notes: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// A vehicle owner/investor registered against this business. Every vehicle
+// must be tied to one going forward — see Vehicle.owner_id.
+export interface Owner {
+  id: string;
+  business_id: string;
+  full_name: string;
+  // Address — required by the Registry form going forward, nullable at the
+  // DB level for owner rows created before this existed. Structured as
+  // province + municipality (the same shared geo reference tables bookings
+  // use for destinations) plus a free-text street-level line.
+  address_province_id: string | null;
+  address_municipality_id: string | null;
+  address_line: string | null;
+  // Optional at intake, editable later.
+  contact_number: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// One entry in the action history (Settings > Action History) — logged for
+// every edit made to an owner or vehicle record, for transparency. Creation
+// is logged too (with changes: null) so the history shows the full timeline.
+// entity_label is a snapshot taken at log time (plate number / owner full
+// name) so history still reads sensibly if the record is later deleted.
+export interface ActionLogChange {
+  field: string;
+  label: string;
+  old: string | null;
+  new: string | null;
+}
+
+export interface ActionLogEntry {
+  id: string;
+  business_id: string;
+  entity_type: "owner" | "vehicle";
+  entity_id: string;
+  entity_label: string;
+  action: "created" | "updated";
+  // Stored as JSON text in SQLite; parsed to ActionLogChange[] by the repo
+  // layer before reaching the UI.
+  changes: ActionLogChange[] | null;
+  performed_by: string | null;
+  created_at: string;
 }
 
 export interface Customer {
@@ -63,18 +123,33 @@ export interface Booking {
   // What staff actually entered as collected/agreed — a plain manual field,
   // not auto-computed. Renamed from total_price.
   payment_amount: string | null;
-  // System-computed expected total at booking time (half-days x half the
-  // resolved Rate Matrix rate for the vehicle's seating band and the
-  // destination's tier, or half-days x half of vehicle.daily_rate as a
-  // fallback). Stored for the future Owners' portal reconciliation. Hidden
-  // from the UI by default — only ever shown via Settings > Rental "Display
-  // expected payment computation", and NEVER on the Home dashboard regardless
-  // of that toggle (UI-layer rule).
+  // System-computed expected total at booking time — exact elapsed hours x
+  // (resolved Rate Matrix rate for the vehicle's seating band and the
+  // destination's tier / 24), or the same against vehicle.daily_rate as a
+  // fallback, rounded up to the nearest 50. Stored for the future Owners'
+  // portal reconciliation. Hidden from the UI by default — only ever shown
+  // via Settings > Rental "Display expected payment computation", and NEVER
+  // on the Home dashboard regardless of that toggle (UI-layer rule).
   expected_payment: string | null;
   created_by: string | null;
   // Local-only column, no server counterpart. 1 while the offline-created hold
   // still needs a live availability check (ROD003); cleared by the sync engine.
   pending_availability_check: number;
+  // Actual arrival/return timestamp — distinct from end_date (the ETA staff
+  // entered). Null means the vehicle hasn't been marked back yet: the booking
+  // reads as "active" and the vehicle stays "rented" even past its due-back
+  // time, so it's still trackable for a time extension. Once set, status
+  // becomes "completed" and the vehicle goes back to "available". Set either
+  // at booking creation (for a backdated recording) or later via "Mark
+  // returned" on an ongoing booking.
+  actual_return_at: string | null;
+  // Actual departure timestamp — mirrors actual_return_at for the other end
+  // of the rental, distinct from start_date (the scheduled ETD). Null means
+  // the booking is still "pending" and hasn't been confirmed as departed yet,
+  // even once its scheduled ETD has already passed (surfaced as a live
+  // "departure due" flag). Set either at booking creation (when the rental had
+  // already begun by save time) or later via "Mark departed".
+  actual_departure_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +167,13 @@ export interface AppSettings {
   timeFormat: TimeFormat;
   durationDisplay: DurationDisplay;
   showExpectedPayment: boolean;
+  // Home dashboard-only cosmetic terminology swaps — display labels, never
+  // touching underlying field names or stored data. Each toggles
+  // independently; every other screen always keeps the standard wording.
+  dashLabelUnit: boolean; // "Vehicle" -> "Unit"
+  dashLabelLessee: boolean; // "Customer" -> "Lessee"
+  dashLabelEtd: boolean; // "Start"/"Out" -> "ETD"
+  dashLabelEta: boolean; // "End"/"Due back" -> "ETA"
 }
 
 // --- Rate Matrix: destination-tier x seating-capacity pricing --------------

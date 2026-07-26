@@ -25,6 +25,9 @@
 | ROT004 | HIGH | Local-first desktop UI (Vehicles/Customers/Bookings/Home/Checkout/Settings), dark theme, pickers | SES004 |
 | ROT005 | MED  | Rate Matrix pricing — tiers + custom per-city rates wired through booking + checkout | SES005 |
 | ROT006 | MED  | Global PSGC municipalities table; HQ relocated to Settings; dangling cities-FK fix | SES006 |
+| ROT008 | MED  | Rate Matrix panel on booking form; pricing finalized on exact hours (no half-day billing) | SES007 |
+| ROT009 | HIGH | Owners + Registry tab, action_logs/Action History, Fleet registration simplified | SES007 |
+| ROT010 | HIGH | Booking lifecycle overhaul — timing-derived status, vehicle status auto-sync, overdue/departure-due guards | SES007 |
 
 ---
-# Lines: 14 / 100 — Budget remaining: 86
+# Lines: 33 / 100 — Budget remaining: 67

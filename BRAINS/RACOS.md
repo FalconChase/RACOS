@@ -28,7 +28,7 @@ ONBOARDED   : 2026-07-25
 
 ---
 ## PHASE
-Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles, Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix) running entirely against the local SQLite cache. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
+Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
 
 ---
 ## STATE
@@ -57,6 +57,9 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT004 | HIGH | Local-first desktop UI: Vehicles/Customers/Bookings/Home/Checkout screens, sidebar nav, dark design-token theme, custom Date/Time pickers, Settings screen + app_settings, payment/rental-duration settings, Rentals Ongoing/History subtabs | SES004 |
 | ROT005 | MED  | Rate Matrix pricing: provinces + business_profile + seating_bands + rate_matrix schema, tier computation (1=same province as HQ, 2=same region, 3=other), custom per-city rate overrides, wired through booking form + Checkout | SES005 |
 | ROT006 | MED  | Replaced business-scoped `cities` table with a global PSGC-sourced `municipalities` table (1597 rows, embedded locally, zero runtime network calls); removed the per-city Tier-1 toggle (HQ's own province/city is now automatically Tier 1); relocated HQ province/city from Rate Matrix into a read-only Business section on Settings (one-time-set with a "Change" re-edit link) | SES006 |
+| ROT008 | MED  | Rate Matrix panel on the booking form (replaces expected-payment text); pricing finalized as exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly billing rounding; half-day count kept as display-only reference | SES007 |
+| ROT009 | HIGH | Owners + Registry: `owners` table, vehicle must have an owner to register on Fleet, unified Vehicle & Owner Registry tab (Owners subtab), `action_logs` + Settings Action History for edits to optional fields, optional chassis/engine/GPS fields, structured owner address; Fleet registration simplified to Owner + seats (daily rate field removed); Rentals defaults to Ongoing subtab | SES007 |
+| ROT010 | HIGH | Booking lifecycle overhaul: status (pending/active/completed) derived from timing + actual_return_at/actual_departure_at rather than set directly; vehicle rented/available status auto-syncs with it; backdated-booking arrival confirmation + general Mark returned/Mark departed actions; live real-time overdue/departure-due counters; Home live clock; Settings > Dashboard cosmetic terminology toggles (Unit/Lessee/ETD/ETA) | SES007 |
 
 ---
 ## DECISIONS
@@ -70,6 +73,9 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD006 | LOCKED | Self-serve signup via Supabase Auth; free trial precedes paid |
 | ROD007 | LOCKED | Separate from RACM (concept-source only) and BOOQ (directory app; no deep integration needed) |
 | ROD008 | LOCKED | HQ province/city is a one-time setup step (read-only by default) but not hard-locked — a "Change" link keeps it re-editable during this build phase to exercise tier logic |
+| ROD009 | LOCKED | Pricing bills on exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly rounding for billing; half-day count is display-only reference, never re-adopted as the billing basis |
+| ROD010 | LOCKED | Booking status (pending/active/completed) is derived from timing + actual arrival/departure timestamps, never set directly by staff; vehicle rented/available status auto-syncs with it |
+| ROD011 | LOCKED | Every vehicle must be tied to a registered Owner before it can be registered on Fleet; Owner + Vehicle share one unified Registry form |
 
 ---
 ## FILES
@@ -83,4 +89,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
 
 ---
-# Lines: ~87 / 120 — Budget remaining: ~33 — estimate by BRAIN, CLODE to re-verify per CL010
+# Lines: ~93 / 120 — Budget remaining: ~27 — estimate by BRAIN, CLODE to re-verify per CL010

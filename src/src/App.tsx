@@ -12,8 +12,9 @@ import BookingsScreen from "./screens/BookingsScreen";
 import CheckoutScreen from "./screens/CheckoutScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import RateMatrixScreen from "./screens/RateMatrixScreen";
+import RegistryScreen from "./screens/RegistryScreen";
 
-export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "settings";
+export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settings";
 
 const TITLES: Record<Tab, string> = {
   home: "Home",
@@ -21,6 +22,7 @@ const TITLES: Record<Tab, string> = {
   customers: "Customers",
   bookings: "Rentals",
   rateMatrix: "Rate Matrix",
+  registry: "Registry",
   settings: "Settings",
 };
 
@@ -107,12 +109,13 @@ function App() {
               {tab === "home" && (
                 <HomeScreen onNavigate={goToTab} onWalkInCheckout={() => goToTab("bookings")} />
               )}
-              {tab === "vehicles" && <VehiclesScreen />}
+              {tab === "vehicles" && <VehiclesScreen onNavigateToRegistry={() => goToTab("registry")} />}
               {tab === "customers" && <CustomersScreen />}
               {tab === "bookings" && (
                 <BookingsScreen onCheckout={(id) => setCheckoutBookingId(id)} />
               )}
               {tab === "rateMatrix" && <RateMatrixScreen />}
+              {tab === "registry" && <RegistryScreen />}
               {tab === "settings" && <SettingsScreen />}
             </>
           )}

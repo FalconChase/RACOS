@@ -64,6 +64,36 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0009_fix_city_fk_targets.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "owners",
+            sql: include_str!("../migrations/0010_owners.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 11,
+            description: "registry_and_action_log",
+            sql: include_str!("../migrations/0011_registry_and_action_log.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 12,
+            description: "booking_actual_return",
+            sql: include_str!("../migrations/0012_booking_actual_return.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 13,
+            description: "booking_departure_tracking",
+            sql: include_str!("../migrations/0013_booking_departure_tracking.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 14,
+            description: "dashboard_label_settings",
+            sql: include_str!("../migrations/0014_dashboard_label_settings.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

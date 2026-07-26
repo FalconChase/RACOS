@@ -6,7 +6,7 @@ import {
   CameraIcon,
   UsersIcon,
   ReceiptIcon,
-  UserStarIcon,
+  FileTextIcon,
   SettingsIcon,
   PanelLeftIcon,
   MapPinIcon,
@@ -17,6 +17,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
   { id: "home", label: "Home", icon: HomeIcon },
   { id: "bookings", label: "Rentals", icon: KeyIcon },
   { id: "vehicles", label: "Fleet", icon: CarIcon },
+  { id: "registry", label: "Registry", icon: FileTextIcon },
   { id: "customers", label: "Customers", icon: UsersIcon },
   { id: "rateMatrix", label: "Rate Matrix", icon: MapPinIcon },
 ];
@@ -27,7 +28,6 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
 const COMING_SOON = [
   { label: "Inspections", icon: CameraIcon },
   { label: "Settlements", icon: ReceiptIcon },
-  { label: "Owners", icon: UserStarIcon },
 ];
 
 interface SidebarProps {
