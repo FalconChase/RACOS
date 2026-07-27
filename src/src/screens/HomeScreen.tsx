@@ -1,21 +1,13 @@
 import { useEffect, useState } from "react";
-import { AlertTriangleIcon, ArrowUpRightIcon, ArrowDownLeftIcon } from "../components/icons";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listCustomers } from "../lib/repo/customers";
 import { listBookings } from "../lib/repo/bookings";
 import { useSettings } from "../lib/settingsContext";
-import { formatTime } from "../lib/dateFormat";
+import { formatDateTime, formatTime } from "../lib/dateFormat";
 import { formatHoursMinutes } from "../lib/duration";
+import { bookingRef } from "../lib/bookingRef";
 import type { Booking, Customer, Vehicle } from "../lib/types";
 import type { Tab } from "../App";
-
-function isSameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
 
 interface HomeScreenProps {
   onNavigate: (tab: Tab) => void;
@@ -51,31 +43,10 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
   const offFleet = vehicles.filter((v) => v.status === "maintenance" || v.status === "retired").length;
   const fleet = vehicles.length;
 
+  // Every non-cancelled/non-completed booking — the Home table shows all of
+  // them, not just ones tied to today. Overdue/departure-due detection lives
+  // in isOverdueReturn/isDepartureDue below, next to statusCell.
   const active = bookings.filter((b) => b.status !== "cancelled" && b.status !== "completed");
-
-  // Overdue return: active, arrival unresolved, due-back already elapsed —
-  // shown with a live "Xh Ym" counter, not a fixed timestamp, so it keeps
-  // ticking until someone actually marks the vehicle back (Rentals > Mark
-  // returned). Not restricted to "today" — a return can go overdue any day.
-  const overdue = active
-    .filter((b) => b.status === "active")
-    .filter((b) => new Date(b.end_date) < now);
-
-  // Departure due: still pending, scheduled ETD already elapsed and nobody's
-  // confirmed it left yet (Rentals > Mark departed) — the mirror-image guard
-  // of the above, also not restricted to "today".
-  const departureDue = active
-    .filter((b) => b.status === "pending")
-    .filter((b) => new Date(b.start_date) <= now);
-
-  // Plain upcoming reminders — only while they haven't tipped over into one of
-  // the flagged states above yet.
-  const departuresToday = active.filter(
-    (b) => b.status === "pending" && isSameDay(new Date(b.start_date), now) && new Date(b.start_date) > now,
-  );
-  const returnsToday = active.filter(
-    (b) => b.status === "active" && isSameDay(new Date(b.end_date), now) && new Date(b.end_date) > now,
-  );
 
   function vehicleLabel(id: string) {
     return vehicles.find((v) => v.id === id)?.plate_number ?? "—";
@@ -84,54 +55,89 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
     return customers.find((c) => c.id === id)?.full_name ?? "—";
   }
 
-  // Home-only cosmetic terminology (Settings > Dashboard) — display-only,
-  // never touches underlying field names or stored data. Every other screen
-  // always keeps saying Vehicle/Customer/Start/End.
-  function unitText(id: string) {
-    return `${settings.dashLabelUnit ? "Unit " : ""}${vehicleLabel(id)}`;
-  }
-  function lesseeText(id: string) {
-    return `${settings.dashLabelLessee ? "Lessee " : ""}${customerLabel(id)}`;
-  }
-
   const today = now.toLocaleDateString(undefined, {
     weekday: "long",
     month: "long",
     day: "numeric",
   });
 
-  const todayRows: { key: string; icon: React.ReactNode; text: string; meta: string; danger?: boolean; warning?: boolean }[] = [
-    ...overdue.map((b) => ({
-      key: b.id,
-      icon: <AlertTriangleIcon size={20} />,
-      text: `Overdue return — ${unitText(b.vehicle_id)} · ${lesseeText(b.customer_id)}`,
-      meta: settings.dashLabelEta
-        ? `${formatHoursMinutes(new Date(b.end_date), now)} past ETA`
-        : `${formatHoursMinutes(new Date(b.end_date), now)} overdue`,
-      danger: true,
-    })),
-    ...departureDue.map((b) => ({
-      key: b.id,
-      icon: <AlertTriangleIcon size={20} />,
-      text: `Departure due — ${unitText(b.vehicle_id)} · ${lesseeText(b.customer_id)}`,
-      meta: settings.dashLabelEtd
-        ? `${formatHoursMinutes(new Date(b.start_date), now)} past ETD`
-        : `${formatHoursMinutes(new Date(b.start_date), now)} since scheduled`,
-      warning: true,
-    })),
-    ...departuresToday.map((b) => ({
-      key: b.id,
-      icon: <ArrowUpRightIcon size={20} />,
-      text: `Departure — ${unitText(b.vehicle_id)} · ${lesseeText(b.customer_id)}`,
-      meta: settings.dashLabelEtd ? `ETD ${formatTime(b.start_date, settings)}` : formatTime(b.start_date, settings),
-    })),
-    ...returnsToday.map((b) => ({
-      key: b.id,
-      icon: <ArrowDownLeftIcon size={20} />,
-      text: `Return — ${unitText(b.vehicle_id)} · ${lesseeText(b.customer_id)}`,
-      meta: settings.dashLabelEta ? `ETA ${formatTime(b.end_date, settings)}` : formatTime(b.end_date, settings),
-    })),
-  ];
+  // Home-only cosmetic terminology (Settings > Dashboard) — display-only,
+  // never touches underlying field names or stored data. Every other screen
+  // always keeps saying Vehicle/Customer/Start/End. Toggles relabel table
+  // column headers (matches the original mockup annotation on headers, not
+  // inline words) — cell values themselves stay plain.
+  const unitHeader = settings.dashLabelUnit ? "Unit" : "Vehicle";
+  const lesseeHeader = settings.dashLabelLessee ? "Lessee" : "Customer";
+  const etdHeader = settings.dashLabelEtd ? "ETD" : "Start";
+  const etaHeader = settings.dashLabelEta ? "ETA" : "End";
+
+  function isSameDay(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  // Every non-cancelled/non-completed booking, not just ones tied to today —
+  // overdue and departure-due bubble to the top since they need attention,
+  // then bookings returning today, then everything else. Within each tier the
+  // default sort is by arrival date (ETA / end_date) ascending, soonest first.
+  function isOverdueReturn(b: Booking) {
+    return b.status === "active" && new Date(b.end_date) < now;
+  }
+  function isDepartureDue(b: Booking) {
+    return b.status === "pending" && new Date(b.start_date) <= now;
+  }
+  function isReturningToday(b: Booking) {
+    return b.status === "active" && !isOverdueReturn(b) && isSameDay(new Date(b.end_date), now);
+  }
+  function rowPriority(b: Booking) {
+    if (isOverdueReturn(b)) return 0;
+    if (isDepartureDue(b)) return 1;
+    if (isReturningToday(b)) return 2;
+    return 3;
+  }
+  const homeRows = [...active].sort((a, b) => {
+    const priorityDiff = rowPriority(a) - rowPriority(b);
+    if (priorityDiff !== 0) return priorityDiff;
+    return new Date(a.end_date).getTime() - new Date(b.end_date).getTime();
+  });
+
+  // Plain-status pill colors match BookingsScreen's STATUS_STYLES exactly, so
+  // an on-schedule booking looks identical here and on Rentals.
+  const PLAIN_STATUS_STYLE: Record<string, { bg: string; color: string }> = {
+    pending: { bg: "var(--bg-warning)", color: "var(--text-warning)" },
+    confirmed: { bg: "var(--bg-accent)", color: "var(--text-accent)" },
+    active: { bg: "var(--bg-success)", color: "var(--text-success)" },
+  };
+
+  // Status cell per booking — pill label + optional live counter subtext,
+  // same visual convention BookingsScreen uses for overdue/departure-due.
+  function statusCell(booking: Booking) {
+    if (isOverdueReturn(booking)) {
+      return {
+        label: "overdue",
+        bg: "var(--bg-danger)",
+        color: "var(--text-danger)",
+        sub: `${formatHoursMinutes(new Date(booking.end_date), now)} ${settings.dashLabelEta ? "past ETA" : "overdue"}`,
+      };
+    }
+    if (isDepartureDue(booking)) {
+      return {
+        label: "departure due",
+        bg: "var(--bg-warning)",
+        color: "var(--text-warning)",
+        sub: `${formatHoursMinutes(new Date(booking.start_date), now)} ${settings.dashLabelEtd ? "past ETD" : "since scheduled"}`,
+      };
+    }
+    if (isReturningToday(booking)) {
+      return {
+        label: "returning today",
+        bg: "var(--bg-accent)",
+        color: "var(--text-accent)",
+        sub: null as string | null,
+      };
+    }
+    const style = PLAIN_STATUS_STYLE[booking.status] ?? { bg: "var(--surface-1)", color: "var(--text-muted)" };
+    return { label: booking.status, bg: style.bg, color: style.color, sub: null as string | null };
+  }
 
   return (
     <div className="space-y-5">
@@ -146,39 +152,48 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
         <div className="mb-2.5 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
           Today — {today} · {formatTime(now.toISOString(), settings)}
         </div>
-        <div className="overflow-hidden rounded-md" style={{ border: "0.5px solid var(--border)" }}>
-          {loading ? (
-            <p className="p-4 text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
-          ) : todayRows.length === 0 ? (
-            <p className="p-4 text-base" style={{ color: "var(--text-muted)" }}>Nothing due today.</p>
-          ) : (
-            todayRows.map((row, i) => (
-              <div
-                key={row.key + row.text}
-                className="flex items-center gap-3 px-4 py-3.5"
-                style={{
-                  borderBottom: i < todayRows.length - 1 ? "0.5px solid var(--border)" : undefined,
-                  background: row.danger ? "var(--bg-danger)" : row.warning ? "var(--bg-warning)" : undefined,
-                  color: row.danger ? "var(--text-danger)" : row.warning ? "var(--text-warning)" : "var(--text-secondary)",
-                }}
-              >
-                {row.icon}
-                <div
-                  className="flex-1 text-base"
-                  style={{
-                    color: row.danger ? "var(--text-danger)" : row.warning ? "var(--text-warning)" : "var(--text-primary)",
-                    fontWeight: row.danger || row.warning ? 500 : 400,
-                  }}
-                >
-                  {row.text}
-                </div>
-                <div className="text-sm" style={{ color: row.danger ? "var(--text-danger)" : row.warning ? "var(--text-warning)" : "var(--text-muted)" }}>
-                  {row.meta}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+        {loading ? (
+          <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
+        ) : homeRows.length === 0 ? (
+          <p className="text-base" style={{ color: "var(--text-muted)" }}>Nothing due today.</p>
+        ) : (
+          <table className="w-full border-collapse text-left text-base">
+            <thead>
+              <tr style={{ background: "var(--surface-1)" }}>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Ref</th>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{unitHeader}</th>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{lesseeHeader}</th>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{etdHeader}</th>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{etaHeader}</th>
+                <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {homeRows.map((booking) => {
+                const status = statusCell(booking);
+                return (
+                  <tr key={booking.id}>
+                    <td className="px-3 py-2.5 font-mono text-sm" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{bookingRef(booking.id)}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{vehicleLabel(booking.vehicle_id)}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{customerLabel(booking.customer_id)}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(booking.start_date, settings)}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(booking.end_date, settings)}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
+                      <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={{ background: status.bg, color: status.color }}>
+                        {status.label}
+                      </span>
+                      {status.sub && (
+                        <div className="mt-1 text-sm" style={{ color: status.color }}>
+                          {status.sub}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="flex gap-3">

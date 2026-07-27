@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/settingsContext";
 import { APP_VERSION } from "../lib/version";
 import { getBusinessProfile, listMunicipalities, listProvinces, setHqCity, setHqProvince } from "../lib/repo/locations";
+import { getCurrentBusinessName, setCurrentBusinessName } from "../lib/db";
 import { resetAllBookings } from "../lib/repo/bookings";
 import { factoryReset } from "../lib/repo/factoryReset";
 import { listActionLogs } from "../lib/repo/actionLog";
@@ -15,6 +16,68 @@ const inputStyle: React.CSSProperties = {
   background: "var(--surface-2)",
   color: "var(--text-primary)",
 };
+
+// The name shown on printed Remittance statements (RemittancesReport.tsx)
+// and anywhere else the business identifies itself — separate from the HQ
+// province/city below, which is pricing-tier reference data, not identity.
+function BusinessName() {
+  const [saved, setSaved] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getCurrentBusinessName().then((name) => {
+      setSaved(name);
+      setDraft(name ?? "");
+      setLoading(false);
+    });
+  }, []);
+
+  const dirty = draft.trim() !== "" && draft.trim() !== (saved ?? "");
+
+  async function handleSave() {
+    const next = draft.trim();
+    if (!next) return;
+    setBusy(true);
+    await setCurrentBusinessName(next);
+    setSaved(next);
+    setBusy(false);
+  }
+
+  if (loading) {
+    return <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  }
+
+  return (
+    <div>
+      <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+        Business name
+      </label>
+      <div className="flex gap-3">
+        <input
+          type="text"
+          className="w-full max-w-sm rounded-md px-3 py-2.5 text-base"
+          style={inputStyle}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Your business name"
+        />
+        <button
+          onClick={handleSave}
+          disabled={!dirty || busy}
+          className="shrink-0 rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+        >
+          Save
+        </button>
+      </div>
+      <p className="mt-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
+        Shown on printed Remittance statements and other business-facing documents.
+      </p>
+    </div>
+  );
+}
 
 function BusinessHeadquarters() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -378,7 +441,12 @@ export default function SettingsScreen() {
       <div className="space-y-3">
         <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Business</h2>
         <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
-          <BusinessHeadquarters />
+          <BusinessName />
+          <div className="pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
+            <div className="pt-3">
+              <BusinessHeadquarters />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -492,6 +560,20 @@ export default function SettingsScreen() {
             checked={settings.dashLabelEta}
             onChange={(v) => setSettings({ dashLabelEta: v })}
           />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Settlements</h2>
+        <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
+          <DashboardLabelToggle
+            label='Show remittance summary (recorded/overtime breakdown) on screen'
+            checked={settings.showRemittanceSummary}
+            onChange={(v) => setSettings({ showRemittanceSummary: v })}
+          />
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            The compact R[..]/O[..] summary row on Settlements &gt; Remittances. Off by default — it's a staff/audit detail, not something an owner-facing screen needs by default. Always included when printing a statement, regardless of this setting.
+          </p>
         </div>
       </div>
 

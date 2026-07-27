@@ -28,7 +28,7 @@ ONBOARDED   : 2026-07-25
 
 ---
 ## PHASE
-Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
+Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix, Settlements, Tools) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Settlements (Records + Remittances, PDF-verified breakdown billing, print) and a Tools tab (Car Activity vehicle timeline) have since shipped. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
 
 ---
 ## STATE
@@ -60,6 +60,9 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT008 | MED  | Rate Matrix panel on the booking form (replaces expected-payment text); pricing finalized as exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly billing rounding; half-day count kept as display-only reference | SES007 |
 | ROT009 | HIGH | Owners + Registry: `owners` table, vehicle must have an owner to register on Fleet, unified Vehicle & Owner Registry tab (Owners subtab), `action_logs` + Settings Action History for edits to optional fields, optional chassis/engine/GPS fields, structured owner address; Fleet registration simplified to Owner + seats (daily rate field removed); Rentals defaults to Ongoing subtab | SES007 |
 | ROT010 | HIGH | Booking lifecycle overhaul: status (pending/active/completed) derived from timing + actual_return_at/actual_departure_at rather than set directly; vehicle rented/available status auto-syncs with it; backdated-booking arrival confirmation + general Mark returned/Mark departed actions; live real-time overdue/departure-due counters; Home live clock; Settings > Dashboard cosmetic terminology toggles (Unit/Lessee/ETD/ETA) | SES007 |
+| ROT011 | HIGH | Settlements module (Records + Remittances): payment tracking, rate-based breakdown billing on a single shared cash bucket per booking (PDF-verified against user's reference scenarios), print-ready statements, compact R/O summary toggle, editable Business name | SES008 |
+| ROT012 | MED  | Booking safety guards: pre-save absurd-duration confirmation on backdated entries, editable actual-return time with edit history, Fleet Status made read-only | SES008 |
+| ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
 
 ---
 ## DECISIONS
@@ -76,6 +79,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD009 | LOCKED | Pricing bills on exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly rounding for billing; half-day count is display-only reference, never re-adopted as the billing basis |
 | ROD010 | LOCKED | Booking status (pending/active/completed) is derived from timing + actual arrival/departure timestamps, never set directly by staff; vehicle rented/available status auto-syncs with it |
 | ROD011 | LOCKED | Every vehicle must be tied to a registered Owner before it can be registered on Fleet; Owner + Vehicle share one unified Registry form |
+| ROD012 | LOCKED | Remittances breakdown billing draws from one shared cash bucket per booking (not separate scheduled/overtime buckets) — a block bills at the full rate-based amount only when it's genuinely full-length and the bucket still covers it, otherwise it absorbs the remainder and later blocks get 0; verified against the user's reference spreadsheet |
 
 ---
 ## FILES
@@ -89,4 +93,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
 
 ---
-# Lines: ~93 / 120 — Budget remaining: ~27 — estimate by BRAIN, CLODE to re-verify per CL010
+# Lines: ~96 / 120 — Budget remaining: ~24 — estimate by BRAIN, CLODE to re-verify per CL010

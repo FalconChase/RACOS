@@ -28,6 +28,9 @@
 | ROT008 | MED  | Rate Matrix panel on booking form; pricing finalized on exact hours (no half-day billing) | SES007 |
 | ROT009 | HIGH | Owners + Registry tab, action_logs/Action History, Fleet registration simplified | SES007 |
 | ROT010 | HIGH | Booking lifecycle overhaul — timing-derived status, vehicle status auto-sync, overdue/departure-due guards | SES007 |
+| ROT011 | HIGH | Settlements module — Records/Remittances, single-shared-bucket breakdown billing (PDF-verified), print, business name, R/O summary toggle | SES008 |
+| ROT012 | MED  | Booking safety guards — pre-save duration confirmation, editable actual-return time w/ history, Fleet Status read-only | SES008 |
+| ROT013 | MED  | Tools tab + Car Activity — per-vehicle month timeline, overlap detection, viewport-fit grid, self-clamping tooltip | SES008 |
 
 ---
-# Lines: 33 / 100 — Budget remaining: 67
+# Lines: 36 / 100 — Budget remaining: 64

@@ -72,7 +72,7 @@ export interface ActionLogChange {
 export interface ActionLogEntry {
   id: string;
   business_id: string;
-  entity_type: "owner" | "vehicle";
+  entity_type: "owner" | "vehicle" | "booking";
   entity_id: string;
   entity_label: string;
   action: "created" | "updated";
@@ -150,6 +150,18 @@ export interface Booking {
   // "departure due" flag). Set either at booking creation (when the rental had
   // already begun by save time) or later via "Mark departed".
   actual_departure_at: string | null;
+  // Per-hour rate resolved (custom rate / Rate Matrix cell / vehicle
+  // daily_rate fallback — see resolveRate) at the exact moment this booking
+  // was recorded. Same figure already used to compute expected_payment, just
+  // persisted on its own too, so Settlements > Records can show a booking's
+  // true historical rate even if the Rate Matrix changes later. Null for rows
+  // created before this column existed.
+  resolved_rate: string | null;
+  // What staff collected specifically for overtime, kept separate from
+  // payment_amount (the base rental payment). Only ever set via "Mark
+  // returned" when the confirmed arrival lands after end_date — null for
+  // every on-time/early return.
+  additional_payment: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -174,6 +186,10 @@ export interface AppSettings {
   dashLabelLessee: boolean; // "Customer" -> "Lessee"
   dashLabelEtd: boolean; // "Start"/"Out" -> "ETD"
   dashLabelEta: boolean; // "End"/"Due back" -> "ETA"
+  // Settlements > Remittances' compact R[..]/O[..] summary row — off by
+  // default on screen (a staff/audit detail), but always included when
+  // printing regardless of this setting (see RemittancesReport.tsx).
+  showRemittanceSummary: boolean;
 }
 
 // --- Rate Matrix: destination-tier x seating-capacity pricing --------------

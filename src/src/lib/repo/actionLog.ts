@@ -4,7 +4,7 @@ import type { ActionLogChange, ActionLogEntry } from "../types";
 interface RawActionLogRow {
   id: string;
   business_id: string;
-  entity_type: "owner" | "vehicle";
+  entity_type: "owner" | "vehicle" | "booking";
   entity_id: string;
   entity_label: string;
   action: "created" | "updated";
@@ -32,11 +32,23 @@ export async function listActionLogs(limit = 100): Promise<ActionLogEntry[]> {
   return rows.map(parseRow);
 }
 
+// All logged edits for one entity type, newest first — used by Rentals to
+// show each booking's own "edited ..." indicator without a separate query
+// per row (grouped client-side by entity_id instead).
+export async function listActionLogsByType(entityType: "owner" | "vehicle" | "booking", limit = 500): Promise<ActionLogEntry[]> {
+  const db = await getDb();
+  const rows = await db.select<RawActionLogRow[]>(
+    "select * from action_logs where business_id = ? and entity_type = ? order by created_at desc limit ?",
+    [currentBusinessId(), entityType, limit],
+  );
+  return rows.map(parseRow);
+}
+
 // Appends one entry to the action history. Not queued through the outbox —
 // this is a local-only audit trail for now, not yet part of the Supabase
 // sync surface.
 export async function logAction(params: {
-  entityType: "owner" | "vehicle";
+  entityType: "owner" | "vehicle" | "booking";
   entityId: string;
   entityLabel: string;
   action: "created" | "updated";

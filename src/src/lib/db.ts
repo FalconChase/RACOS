@@ -50,3 +50,24 @@ export function currentBusinessId(): string {
 export function currentProfileId(): string {
   return DEV_PROFILE_ID;
 }
+
+// Used for print/report headers (Settlements > Remittances) — the business's
+// own display name, not tenant-scoped data from any other table.
+export async function getCurrentBusinessName(): Promise<string | null> {
+  const db = await getDb();
+  const rows = await db.select<{ name: string }[]>(
+    "select name from businesses where id = ?",
+    [currentBusinessId()],
+  );
+  return rows[0]?.name ?? null;
+}
+
+// Editable from Settings > Business — this is what shows up on printed
+// Remittance statements instead of the dev-seed "Dev Rental Co." placeholder.
+export async function setCurrentBusinessName(name: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "update businesses set name = ?, updated_at = ? where id = ?",
+    [name, new Date().toISOString(), currentBusinessId()],
+  );
+}

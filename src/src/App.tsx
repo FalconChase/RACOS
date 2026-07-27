@@ -13,8 +13,10 @@ import CheckoutScreen from "./screens/CheckoutScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import RateMatrixScreen from "./screens/RateMatrixScreen";
 import RegistryScreen from "./screens/RegistryScreen";
+import SettlementsScreen from "./screens/SettlementsScreen";
+import ToolsScreen from "./screens/ToolsScreen";
 
-export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settings";
+export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "tools" | "settings";
 
 const TITLES: Record<Tab, string> = {
   home: "Home",
@@ -23,6 +25,8 @@ const TITLES: Record<Tab, string> = {
   bookings: "Rentals",
   rateMatrix: "Rate Matrix",
   registry: "Registry",
+  settlements: "Settlements",
+  tools: "Tools",
   settings: "Settings",
 };
 
@@ -62,12 +66,12 @@ function App() {
 
   return (
     <SettingsProvider>
-    <div className="flex h-screen" style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}>
+    <div className="flex h-screen print:h-auto print:block" style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}>
       <Sidebar active={tab} onSelect={goToTab} />
 
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto print:overflow-visible">
         <header
-          className="flex items-center gap-3 px-6 py-4"
+          className="flex items-center gap-3 px-6 py-4 print:hidden"
           style={{ borderBottom: "0.5px solid var(--border)" }}
         >
           <div
@@ -89,7 +93,7 @@ function App() {
         </header>
 
         <div
-          className="px-6 py-2.5 text-sm"
+          className="px-6 py-2.5 text-sm print:hidden"
           style={{ color: "var(--text-warning)" }}
         >
           Dev mode — placeholder business; Supabase Auth isn't wired up yet.
@@ -103,7 +107,7 @@ function App() {
             />
           ) : (
             <>
-              <h1 className="mb-5 text-2xl font-semibold" style={{ color: "var(--text-primary)" }}>
+              <h1 className="mb-5 text-2xl font-semibold print:hidden" style={{ color: "var(--text-primary)" }}>
                 {TITLES[tab]}
               </h1>
               {tab === "home" && (
@@ -116,6 +120,8 @@ function App() {
               )}
               {tab === "rateMatrix" && <RateMatrixScreen />}
               {tab === "registry" && <RegistryScreen />}
+              {tab === "settlements" && <SettlementsScreen />}
+              {tab === "tools" && <ToolsScreen />}
               {tab === "settings" && <SettingsScreen />}
             </>
           )}

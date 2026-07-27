@@ -10,6 +10,7 @@ import {
   SettingsIcon,
   PanelLeftIcon,
   MapPinIcon,
+  ToolIcon,
 } from "./icons";
 import type { Tab } from "../App";
 
@@ -20,15 +21,14 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
   { id: "registry", label: "Registry", icon: FileTextIcon },
   { id: "customers", label: "Customers", icon: UsersIcon },
   { id: "rateMatrix", label: "Rate Matrix", icon: MapPinIcon },
+  { id: "settlements", label: "Settlements", icon: ReceiptIcon },
+  { id: "tools", label: "Tools", icon: ToolIcon },
 ];
 
 // Shown in the reference design but not built yet — kept visible (dimmed,
 // disabled) so the nav matches the intended shape rather than looking sparse,
-// without pretending the screens exist.
-const COMING_SOON = [
-  { label: "Inspections", icon: CameraIcon },
-  { label: "Settlements", icon: ReceiptIcon },
-];
+// without pretending the screen exists.
+const COMING_SOON = [{ label: "Inspections", icon: CameraIcon }];
 
 interface SidebarProps {
   active: Tab;
@@ -91,7 +91,7 @@ export default function Sidebar({ active, onSelect }: SidebarProps) {
 
   return (
     <aside
-      className="relative flex h-screen shrink-0 flex-col gap-1 py-5"
+      className="relative flex h-screen shrink-0 flex-col gap-1 py-5 print:hidden"
       style={{
         width: effectiveWidth,
         paddingLeft: collapsed ? 8 : 12,

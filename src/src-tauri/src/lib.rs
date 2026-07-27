@@ -94,6 +94,30 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0014_dashboard_label_settings.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "booking_resolved_rate",
+            sql: include_str!("../migrations/0015_booking_resolved_rate.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 16,
+            description: "booking_additional_payment",
+            sql: include_str!("../migrations/0016_booking_additional_payment.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 17,
+            description: "action_log_booking_entity",
+            sql: include_str!("../migrations/0017_action_log_booking_entity.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 18,
+            description: "remittance_summary_setting",
+            sql: include_str!("../migrations/0018_remittance_summary_setting.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

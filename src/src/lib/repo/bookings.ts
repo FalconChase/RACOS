@@ -1,6 +1,8 @@
 import { getDb, currentBusinessId, currentProfileId } from "../db";
 import { queueOutbox } from "./outbox";
 import { updateVehicleStatus } from "./vehicles";
+import { diffField, logAction } from "./actionLog";
+import { bookingRef } from "../bookingRef";
 import type { Booking, BookingStatus } from "../types";
 
 export async function listBookings(): Promise<Booking[]> {
@@ -39,6 +41,9 @@ export interface NewBookingInput {
   // (either "same as due-back" or a manually entered arrival time). Omitted
   // means arrival isn't resolved yet — see status derivation in createBooking.
   actual_return_at?: string;
+  // Per-hour rate resolveRate() came up with in the booking form, passed
+  // through so it can be locked in on the row rather than recomputed later.
+  resolved_rate?: string;
 }
 
 export async function createBooking(input: NewBookingInput): Promise<Booking> {
@@ -89,6 +94,10 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     pending_availability_check: 1,
     actual_return_at: input.actual_return_at ?? null,
     actual_departure_at,
+    resolved_rate: input.resolved_rate ?? null,
+    // Never set at creation — only Mark returned (an overtime return) writes
+    // this, via markBookingReturned. The column defaults to NULL either way.
+    additional_payment: null,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -97,7 +106,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     `insert into bookings
        (id, business_id, vehicle_id, customer_id, start_date, end_date, status, destination_province_id,
         destination_city_id, payment_amount, expected_payment, purpose, created_by,
-        pending_availability_check, actual_return_at, actual_departure_at, created_at, updated_at)
+        pending_availability_check, actual_return_at, actual_departure_at, resolved_rate, created_at, updated_at)
      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       booking.id,
@@ -116,6 +125,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.pending_availability_check,
       booking.actual_return_at,
       booking.actual_departure_at,
+      booking.resolved_rate,
       booking.created_at,
       booking.updated_at,
     ],
@@ -156,13 +166,20 @@ export async function cancelBooking(id: string): Promise<void> {
 // Marks an ongoing booking's vehicle as back — the general "Mark returned"
 // action available on any active booking, not just ones resolved at backdated
 // save time. Moves status to completed and frees the vehicle up.
-export async function markBookingReturned(id: string, actualReturnAt: string): Promise<Booking> {
+// additionalPayment is only ever passed when ArrivalDialog detected overtime
+// (actualReturnAt later than the booking's end_date) and staff entered an
+// amount collected for it — stored separately from payment_amount.
+export async function markBookingReturned(
+  id: string,
+  actualReturnAt: string,
+  additionalPayment?: string,
+): Promise<Booking> {
   const db = await getDb();
   const now = new Date().toISOString();
 
   await db.execute(
-    "update bookings set status = 'completed', actual_return_at = ?, updated_at = ? where id = ?",
-    [actualReturnAt, now, id],
+    "update bookings set status = 'completed', actual_return_at = ?, additional_payment = ?, updated_at = ? where id = ?",
+    [actualReturnAt, additionalPayment ?? null, now, id],
   );
 
   const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
@@ -193,6 +210,65 @@ export async function markBookingDeparted(id: string, actualDepartureAt: string)
 
   await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
   await updateVehicleStatus(updated.vehicle_id, "rented");
+  return updated;
+}
+
+// Corrects a booking's recorded timestamps after the fact — the fix-a-typo
+// escape hatch for a fat-fingered date (e.g. an actual return accidentally
+// landing weeks off, à la the ArrivalDialog "unusually long span" guard).
+// Deliberately narrow: only the four date/time fields, never vehicle,
+// customer, payment, or status — those still only change through their own
+// dedicated actions. Every change is logged to action_logs the same way
+// owner/vehicle edits are, so there's always a record of what a booking's
+// times looked like before the correction.
+export interface BookingTimeUpdate {
+  start_date?: string;
+  end_date?: string;
+  actual_departure_at?: string | null;
+  actual_return_at?: string | null;
+}
+
+const TIME_FIELD_LABELS: Record<keyof BookingTimeUpdate, string> = {
+  start_date: "Out",
+  end_date: "Due back",
+  actual_departure_at: "Actual departure",
+  actual_return_at: "Actual return",
+};
+
+export async function updateBookingTimes(id: string, updates: BookingTimeUpdate): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+
+  const fields = (Object.keys(updates) as (keyof BookingTimeUpdate)[]).filter((k) => updates[k] !== undefined);
+  if (fields.length === 0) return before;
+
+  const now = new Date().toISOString();
+  const setClauses = [...fields.map((f) => `${f} = ?`), "updated_at = ?"];
+  const args: (string | null)[] = [...fields.map((f) => updates[f] ?? null), now, id];
+
+  await db.execute(`update bookings set ${setClauses.join(", ")} where id = ?`, args);
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+
+  const changes = fields
+    .map((f) => diffField(f, TIME_FIELD_LABELS[f], before[f] as string | null, updated[f] as string | null))
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+
+  if (changes.length > 0) {
+    await logAction({
+      entityType: "booking",
+      entityId: id,
+      entityLabel: bookingRef(id),
+      action: "updated",
+      changes,
+    });
+  }
+
   return updated;
 }
 

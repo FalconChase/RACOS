@@ -31,6 +31,14 @@ export default function VehiclesScreen({ onNavigateToRegistry }: VehiclesScreenP
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Separate from editingId (the full vehicle-details edit row below) — this
+  // only ever swaps the Status pill for a dropdown, and only offers
+  // available/maintenance/retired. "rented" is never a manual choice: it's
+  // set automatically the moment a booking actually goes active (see
+  // updateVehicleStatus calls in lib/repo/bookings.ts) and cleared the same
+  // way on return, so there's nothing to hand-edit while a vehicle reads
+  // "rented" — the edit affordance is hidden for that state entirely.
+  const [statusEditId, setStatusEditId] = useState<string | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -127,17 +135,38 @@ export default function VehiclesScreen({ onNavigateToRegistry }: VehiclesScreenP
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.seats ?? "—"}</td>
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{ownerLabel(v.owner_id)}</td>
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
-                    <select
-                      value={v.status}
-                      onChange={(e) => handleStatusChange(v.id, e.target.value as VehicleStatus)}
-                      className="rounded-full border-0 px-3 py-1.5 text-sm font-medium"
-                      style={STATUS_STYLES[v.status]}
-                    >
-                      <option value="available">available</option>
-                      <option value="rented">rented</option>
-                      <option value="maintenance">maintenance</option>
-                      <option value="retired">retired</option>
-                    </select>
+                    {statusEditId === v.id ? (
+                      <select
+                        autoFocus
+                        value={v.status}
+                        onChange={async (e) => {
+                          await handleStatusChange(v.id, e.target.value as VehicleStatus);
+                          setStatusEditId(null);
+                        }}
+                        onBlur={() => setStatusEditId(null)}
+                        className="rounded-full border-0 px-3 py-1.5 text-sm font-medium"
+                        style={STATUS_STYLES[v.status]}
+                      >
+                        <option value="available">available</option>
+                        <option value="maintenance">maintenance</option>
+                        <option value="retired">retired</option>
+                      </select>
+                    ) : (
+                      <div className="flex items-center gap-2.5">
+                        <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={STATUS_STYLES[v.status]}>
+                          {v.status}
+                        </span>
+                        {v.status !== "rented" && (
+                          <button
+                            onClick={() => setStatusEditId(v.id)}
+                            className="text-sm"
+                            style={{ color: "var(--text-accent)" }}
+                          >
+                            Edit status
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
                     <div className="flex justify-end gap-3">

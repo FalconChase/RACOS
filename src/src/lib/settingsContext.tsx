@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelLessee: false,
   dashLabelEtd: false,
   dashLabelEta: false,
+  showRemittanceSummary: false,
 };
 
 interface SettingsContextValue {

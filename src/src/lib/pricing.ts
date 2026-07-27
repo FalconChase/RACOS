@@ -1,4 +1,4 @@
-import type { CustomRate, Province, RateMatrixRow, SeatingBand, Tier, Vehicle } from "./types";
+import type { Booking, BusinessProfile, CustomRate, Province, RateMatrixRow, SeatingBand, Tier, Vehicle } from "./types";
 
 // Tier 1 = same province as HQ, Tier 2 = different province same region,
 // Tier 3 = everything else (outside region / interisland).
@@ -17,6 +17,48 @@ export function computeTier(
 
 export function findSeatingBand(seats: number, bands: SeatingBand[]): SeatingBand | null {
   return bands.find((b) => seats >= b.min_seats && (b.max_seats == null || seats <= b.max_seats)) ?? null;
+}
+
+// Same formula BookingsScreen's booking-form preview uses (ROD009): exact
+// hours x (rate / 24), rounded up to the nearest 50 — no half-day/nightly
+// rounding. Pulled out here so Settlements > Records can bill overtime at the
+// same rate/rule as the original scheduled span, on the booking's actual
+// total elapsed time, instead of re-deriving the formula a second time.
+export function computeExpectedPayment(rate: number, hours: number): number | null {
+  if (!Number.isFinite(rate) || !Number.isFinite(hours)) return null;
+  const raw = (rate / 24) * hours;
+  return Math.ceil(raw / 50) * 50;
+}
+
+// The rate that applies to an existing (already-recorded) booking — its own
+// resolved_rate if one was locked in at creation time (migration 0015),
+// otherwise a live recompute off today's Rate Matrix as a best-effort
+// fallback for rows created before that column existed. Shared by
+// Settlements > Records and the overtime-payment prompt on Mark returned, so
+// both agree on the same rate for the same booking.
+export function resolveBookingRate(
+  booking: Booking,
+  vehicles: Vehicle[],
+  businessProfile: BusinessProfile | null,
+  provinces: Province[],
+  seatingBands: SeatingBand[],
+  rateMatrix: RateMatrixRow[],
+  customRates: CustomRate[],
+): number | null {
+  if (booking.resolved_rate) return Number(booking.resolved_rate);
+  const vehicle = vehicles.find((v) => v.id === booking.vehicle_id);
+  if (!vehicle) return null;
+  const resolved = resolveRate({
+    vehicle,
+    destinationProvinceId: booking.destination_province_id,
+    destinationCityId: booking.destination_city_id,
+    hqProvinceId: businessProfile?.hq_province_id ?? null,
+    provinces,
+    seatingBands,
+    rateMatrix,
+    customRates,
+  });
+  return resolved ? Number(resolved.rate) : null;
 }
 
 export interface ResolvedRate {

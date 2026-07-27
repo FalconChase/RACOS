@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelBooking, createBooking, listBookings, markBookingDeparted, markBookingReturned } from "../lib/repo/bookings";
+import { cancelBooking, createBooking, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
+import type { BookingTimeUpdate } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { createCustomer, listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
 import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/rateMatrix";
+import { listActionLogsByType } from "../lib/repo/actionLog";
 import { bookingRef } from "../lib/bookingRef";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatDuration, formatHoursMinutes } from "../lib/duration";
-import { computeTier, findSeatingBand, resolveRate } from "../lib/pricing";
+import { computeTier, findSeatingBand, resolveBookingRate, resolveRate } from "../lib/pricing";
 import DatePicker from "../components/DatePicker";
 import TimePicker from "../components/TimePicker";
 import FormQuestion from "../components/FormQuestion";
 import SearchableSelect from "../components/SearchableSelect";
 import ArrivalDialog from "../components/ArrivalDialog";
+import EditBookingTimesDialog from "../components/EditBookingTimesDialog";
 import type {
+  ActionLogEntry,
+  AppSettings,
   Booking,
   BookingStatus,
   BusinessProfile,
@@ -97,6 +102,11 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   // underlying mechanism as the Save-time confirmation above.
   const [markReturnedFor, setMarkReturnedFor] = useState<Booking | null>(null);
   const [markDepartedFor, setMarkDepartedFor] = useState<Booking | null>(null);
+  // Fixes a mistaken date/time already saved on a booking (Ongoing or
+  // History) — separate from the Mark departed/returned actions above, which
+  // only ever resolve a still-unset timestamp for the first time.
+  const [editTimesFor, setEditTimesFor] = useState<Booking | null>(null);
+  const [bookingLogs, setBookingLogs] = useState<ActionLogEntry[]>([]);
 
   // Live clock driving the overdue-return / departure-due badges below —
   // ticks every second so their duration readouts stay current without a
@@ -126,7 +136,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
 
   async function refresh() {
     setLoading(true);
-    const [b, v, c, p, profile, bands, matrix, munis, customRts] = await Promise.all([
+    const [b, v, c, p, profile, bands, matrix, munis, customRts, logs] = await Promise.all([
       listBookings(),
       listVehicles(),
       listCustomers(),
@@ -136,6 +146,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
       listRateMatrix(),
       listMunicipalities(),
       listCustomRates(),
+      listActionLogsByType("booking"),
     ]);
     setBookings(b);
     setVehicles(v);
@@ -146,6 +157,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     setRateMatrix(matrix);
     setMunicipalities(munis);
     setCustomRates(customRts);
+    setBookingLogs(logs);
     setLoading(false);
   }
 
@@ -251,6 +263,17 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     [destinationProvinceId, businessProfile, provinces],
   );
 
+  // Rate for whichever booking is currently in the Mark-returned dialog —
+  // feeds the Expected additional payment preview shown there when the
+  // chosen return time lands as overtime.
+  const markReturnedRate = useMemo(
+    () =>
+      markReturnedFor
+        ? resolveBookingRate(markReturnedFor, vehicles, businessProfile, provinces, seatingBands, rateMatrix, customRates)
+        : null,
+    [markReturnedFor, vehicles, businessProfile, provinces, seatingBands, rateMatrix, customRates],
+  );
+
   function resetForm() {
     setVehicleId("");
     setDestinationProvinceId("");
@@ -304,6 +327,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
       expected_payment: expectedPayment !== null ? String(expectedPayment) : undefined,
       purpose: purpose.trim() || undefined,
       actual_return_at: actualReturnAt ?? undefined,
+      resolved_rate: resolvedRate?.rate ?? undefined,
     });
     resetForm();
     setArrivalDialogEta(null);
@@ -329,6 +353,18 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     setConfirmingCancelId(null);
     await refresh();
   }
+
+  // Grouped once per bookingLogs change, rather than filtering the whole log
+  // list per row on every render — same idea as byVehicle in RemittancesReport.
+  const logsByBooking = useMemo(() => {
+    const map = new Map<string, ActionLogEntry[]>();
+    for (const log of bookingLogs) {
+      const list = map.get(log.entity_id) ?? [];
+      list.push(log);
+      map.set(log.entity_id, list);
+    }
+    return map;
+  }, [bookingLogs]);
 
   const canShowForm = vehicles.length > 0;
   const visibleStatuses = subtab === "ongoing" ? ONGOING_STATUSES : HISTORY_STATUSES;
@@ -607,7 +643,10 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
 
               return (
                 <tr key={b.id}>
-                  <td className="px-3 py-2.5 font-mono text-sm" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{bookingRef(b.id)}</td>
+                  <td className="px-3 py-2.5 font-mono text-sm" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
+                    {bookingRef(b.id)}
+                    <EditHistoryBadge entries={logsByBooking.get(b.id) ?? []} settings={settings} />
+                  </td>
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{vehicleLabel(b.vehicle_id)}</td>
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{customerLabel(b.customer_id)}</td>
                   <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{formatDateTime(b.start_date, settings)}</td>
@@ -695,6 +734,15 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
                               Cancel
                             </button>
                           )}
+                          {b.actual_return_at && (
+                            <button
+                              onClick={() => setEditTimesFor(b)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-secondary)" }}
+                            >
+                              Edit times
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
@@ -711,6 +759,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
           kind="arrival"
           mode="create"
           scheduledIso={arrivalDialogEta}
+          departedAtIso={startDT ? startDT.toISOString() : undefined}
           settings={settings}
           onCancel={() => setArrivalDialogEta(null)}
           onConfirm={(actualReturnAt) => saveBooking(actualReturnAt)}
@@ -722,11 +771,13 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
           kind="arrival"
           mode="confirm"
           scheduledIso={markReturnedFor.end_date}
+          departedAtIso={markReturnedFor.actual_departure_at ?? markReturnedFor.start_date}
           settings={settings}
+          rate={markReturnedRate}
           onCancel={() => setMarkReturnedFor(null)}
-          onConfirm={async (actualReturnAt) => {
+          onConfirm={async (actualReturnAt, additionalPayment) => {
             if (!actualReturnAt) return;
-            await markBookingReturned(markReturnedFor.id, actualReturnAt);
+            await markBookingReturned(markReturnedFor.id, actualReturnAt, additionalPayment);
             setMarkReturnedFor(null);
             await refresh();
           }}
@@ -747,6 +798,64 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
             await refresh();
           }}
         />
+      )}
+
+      {editTimesFor && (
+        <EditBookingTimesDialog
+          booking={editTimesFor}
+          settings={settings}
+          onCancel={() => setEditTimesFor(null)}
+          onSave={async (updates: BookingTimeUpdate) => {
+            await updateBookingTimes(editTimesFor.id, updates);
+            setEditTimesFor(null);
+            await refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Small "edited [date]" indicator shown only once a booking actually has any
+// logged time corrections (see updateBookingTimes) — clicking it toggles a
+// popover with the full before/after history, so the fix stays visible
+// without cluttering every row that's never needed one.
+function EditHistoryBadge({ entries, settings }: { entries: ActionLogEntry[]; settings: AppSettings }) {
+  const [open, setOpen] = useState(false);
+  if (entries.length === 0) return null;
+  const latest = entries[0];
+
+  return (
+    <div className="relative mt-1 inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-sm"
+        style={{ color: "var(--text-muted)", textDecoration: "underline dotted" }}
+      >
+        edited {formatDateTime(latest.created_at, settings)}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className="absolute left-0 top-full z-20 mt-1 w-72 rounded-md p-3 text-sm normal-case"
+            style={{ background: "var(--surface-1)", border: "0.5px solid var(--border-strong)", boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}
+          >
+            <div className="space-y-2.5">
+              {entries.map((entry, i) => (
+                <div key={entry.id} className={i === 0 ? undefined : "pt-2.5"} style={i === 0 ? undefined : { borderTop: "0.5px solid var(--border)" }}>
+                  <div style={{ color: "var(--text-muted)" }}>{formatDateTime(entry.created_at, settings)}</div>
+                  {(entry.changes ?? []).map((c, j) => (
+                    <div key={j} className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                      {c.label}: {c.old ? formatDateTime(c.old, settings) : "—"} → {c.new ? formatDateTime(c.new, settings) : "—"}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

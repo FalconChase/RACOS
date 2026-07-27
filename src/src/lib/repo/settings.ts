@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelLessee: false,
   dashLabelEtd: false,
   dashLabelEta: false,
+  showRemittanceSummary: false,
 };
 
 interface SettingsRow {
@@ -21,6 +22,7 @@ interface SettingsRow {
   dashLabelLessee: number;
   dashLabelEtd: number;
   dashLabelEta: number;
+  showRemittanceSummary: number;
 }
 
 function toAppSettings(row: SettingsRow): AppSettings {
@@ -33,6 +35,7 @@ function toAppSettings(row: SettingsRow): AppSettings {
     dashLabelLessee: row.dashLabelLessee === 1,
     dashLabelEtd: row.dashLabelEtd === 1,
     dashLabelEta: row.dashLabelEta === 1,
+    showRemittanceSummary: row.showRemittanceSummary === 1,
   };
 }
 
@@ -42,7 +45,8 @@ export async function getSettings(): Promise<AppSettings> {
     `select date_format as dateFormat, time_format as timeFormat,
             duration_display as durationDisplay, show_expected_payment as showExpectedPayment,
             dash_label_unit as dashLabelUnit, dash_label_lessee as dashLabelLessee,
-            dash_label_etd as dashLabelEtd, dash_label_eta as dashLabelEta
+            dash_label_etd as dashLabelEtd, dash_label_eta as dashLabelEta,
+            show_remittance_summary as showRemittanceSummary
      from app_settings where id = 1`,
   );
   return rows[0] ? toAppSettings(rows[0]) : DEFAULT_SETTINGS;
@@ -55,7 +59,8 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
   await db.execute(
     `update app_settings
      set date_format = ?, time_format = ?, duration_display = ?, show_expected_payment = ?,
-         dash_label_unit = ?, dash_label_lessee = ?, dash_label_etd = ?, dash_label_eta = ?
+         dash_label_unit = ?, dash_label_lessee = ?, dash_label_etd = ?, dash_label_eta = ?,
+         show_remittance_summary = ?
      where id = 1`,
     [
       next.dateFormat,
@@ -66,6 +71,7 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       next.dashLabelLessee ? 1 : 0,
       next.dashLabelEtd ? 1 : 0,
       next.dashLabelEta ? 1 : 0,
+      next.showRemittanceSummary ? 1 : 0,
     ],
   );
   return next;

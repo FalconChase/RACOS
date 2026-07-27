@@ -41,3 +41,41 @@ body {
   background: var(--surface-2);
   color: var(--text-primary);
 }
+
+/* Print (Settlements > Remittances) — the app is dark-themed, but every
+   component already reads its colors from these CSS variables, so remapping
+   them to a light palette here makes the whole app print-legible (white
+   page, dark text, no wasted ink on near-black backgrounds) without touching
+   a single component. */
+@media print {
+  :root {
+    --surface-1: #f4f4f5;
+    --surface-2: #ffffff;
+    --border: rgba(0, 0, 0, 0.15);
+    --border-strong: rgba(0, 0, 0, 0.3);
+
+    --text-primary: #18181b;
+    --text-secondary: #3f3f46;
+    --text-muted: #71717a;
+    --text-accent: #1d4ed8;
+    --text-success: #15803d;
+    --text-warning: #b45309;
+    --text-danger: #b91c1c;
+
+    --bg-accent: #eff6ff;
+    --bg-success: #f0fdf4;
+    --bg-warning: #fffbeb;
+    --bg-danger: #fef2f2;
+
+    --fill-primary: #18181b;
+    --on-primary: #ffffff;
+  }
+
+  html,
+  body,
+  #root {
+    height: auto;
+    background: #ffffff;
+    color: #18181b;
+  }
+}
