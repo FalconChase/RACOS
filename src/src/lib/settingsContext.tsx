@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelEtd: false,
   dashLabelEta: false,
   showRemittanceSummary: false,
+  autoMarkDeparted: true,
 };
 
 interface SettingsContextValue {

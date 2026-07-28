@@ -4,6 +4,7 @@ import { ensureDevBusiness } from "./lib/db";
 import { countPendingOutbox } from "./lib/repo/outbox";
 import { ensureDefaultSeatingBands } from "./lib/repo/rateMatrix";
 import { SettingsProvider } from "./lib/settingsContext";
+import AutoDepartureRunner from "./components/AutoDepartureRunner";
 import Sidebar from "./components/Sidebar";
 import HomeScreen from "./screens/HomeScreen";
 import VehiclesScreen from "./screens/VehiclesScreen";
@@ -66,6 +67,7 @@ function App() {
 
   return (
     <SettingsProvider>
+    <AutoDepartureRunner />
     <div className="flex h-screen print:h-auto print:block" style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}>
       <Sidebar active={tab} onSelect={goToTab} />
 

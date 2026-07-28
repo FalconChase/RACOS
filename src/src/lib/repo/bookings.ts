@@ -3,7 +3,19 @@ import { queueOutbox } from "./outbox";
 import { updateVehicleStatus } from "./vehicles";
 import { diffField, logAction } from "./actionLog";
 import { bookingRef } from "../bookingRef";
-import type { Booking, BookingStatus } from "../types";
+import type { ActionLogChange, Booking, BookingStatus } from "../types";
+
+// Cancellation reasons offered on CancelBookingDialog — kept narrow and
+// preset (plus a free-text escape hatch) rather than an open text field for
+// every cancellation, so the audit trail stays scannable/consistent instead
+// of a pile of one-off phrasing.
+export type CancellationReason = "neverArrived" | "returnedUnit" | "other";
+
+export const CANCELLATION_REASON_LABELS: Record<CancellationReason, string> = {
+  neverArrived: "Client never arrived / declined",
+  returnedUnit: "Client returned the unit",
+  other: "Other",
+};
 
 export async function listBookings(): Promise<Booking[]> {
   const db = await getDb();
@@ -145,7 +157,10 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
   return booking;
 }
 
-export async function cancelBooking(id: string): Promise<void> {
+// `reason` is required — CancelBookingDialog always collects one before
+// calling this, so there's never a cancellation without one on record.
+// `otherDetail` is only meaningful (and only stored) when reason === "other".
+export async function cancelBooking(id: string, reason: CancellationReason, otherDetail?: string): Promise<void> {
   const db = await getDb();
   const now = new Date().toISOString();
   const before = await getBookingById(id);
@@ -153,7 +168,33 @@ export async function cancelBooking(id: string): Promise<void> {
   await db.execute("update bookings set status = 'cancelled', updated_at = ? where id = ?", [now, id]);
 
   const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
-  if (rows[0]) await queueOutbox(db, "bookings", id, "update", rows[0] as unknown as Record<string, unknown>);
+  if (rows[0]) {
+    await queueOutbox(db, "bookings", id, "update", rows[0] as unknown as Record<string, unknown>);
+    // Logged only when the row actually existed to cancel — same guard as
+    // the outbox queue just above, so a bogus id never produces a phantom
+    // entry.
+    const changes: ActionLogChange[] = [];
+
+    // A cancellation that happens after the vehicle already departed is the
+    // questionable case for an audit trail — staff cancelling a booking
+    // that's already out is worth a second look, unlike cancelling one still
+    // "pending" that never left. So when `before` already had a departure
+    // recorded, that fact is snapshotted into changes[] right now, at
+    // cancellation time — reading `before` (the row as it stood right
+    // before this update) rather than anything derived after the fact means
+    // this can never be affected by the cancellation itself, or by a later
+    // Edit-times correction to actual_departure_at.
+    if (before?.actual_departure_at) {
+      changes.push({ field: "actual_departure_at", label: "Departed at", old: null, new: before.actual_departure_at });
+    }
+
+    // The reason staff gave, snapshotted the same permanent way — free text
+    // only ever stored when "Other" was picked, never a preset label.
+    const reasonText = reason === "other" && otherDetail ? `Other: ${otherDetail}` : CANCELLATION_REASON_LABELS[reason];
+    changes.push({ field: "cancellation_reason", label: "Reason", old: null, new: reasonText });
+
+    await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "cancelled", changes });
+  }
 
   // Cancelling a booking that had already put the vehicle "rented" (active,
   // arrival unresolved) frees it back up — otherwise it'd stay stuck as
@@ -187,6 +228,8 @@ export async function markBookingReturned(
   if (!updated) throw new Error("Booking not found.");
 
   await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+  // Bare marker, no changes[] — same reasoning as cancelBooking.
+  await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "completed" });
   await updateVehicleStatus(updated.vehicle_id, "available");
   return updated;
 }
@@ -195,7 +238,13 @@ export async function markBookingReturned(
 // to markBookingReturned, for a booking whose scheduled ETD (start_date) has
 // passed (or is being confirmed early) without ever getting resolved at
 // creation time. Moves status to active and marks the vehicle rented.
-export async function markBookingDeparted(id: string, actualDepartureAt: string): Promise<Booking> {
+//
+// `auto` distinguishes a staff click from AutoDepartureRunner firing this on
+// its own once ETD passes (see Settings > Rental > "Auto-mark departed") —
+// logged the same "departed" action either way, but an automatic run adds a
+// changes[] note saying so, so the audit trail (Tools > Logs) can tell a
+// deliberate staff action apart from the system just closing the loop.
+export async function markBookingDeparted(id: string, actualDepartureAt: string, auto = false): Promise<Booking> {
   const db = await getDb();
   const now = new Date().toISOString();
 
@@ -209,8 +258,29 @@ export async function markBookingDeparted(id: string, actualDepartureAt: string)
   if (!updated) throw new Error("Booking not found.");
 
   await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+  const changes = auto ? [{ field: "trigger", label: "Triggered by", old: null, new: "Automatic (ETD passed)" }] : undefined;
+  await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "departed", changes });
   await updateVehicleStatus(updated.vehicle_id, "rented");
   return updated;
+}
+
+// Bulk-runs the "ETD passed, still pending" case for every business at once
+// — called on an interval by AutoDepartureRunner whenever Settings > Rental
+// > "Auto-mark departed" is on. Always resolves as "same as scheduled ETD"
+// (actual_departure_at = start_date), the same default Mark departed itself
+// offers first — never invents a different departure time on its own.
+// Returns how many bookings it just auto-departed.
+export async function autoMarkDepartedDueBookings(): Promise<number> {
+  const db = await getDb();
+  const nowIso = new Date().toISOString();
+  const due = await db.select<Booking[]>(
+    "select * from bookings where business_id = ? and status = 'pending' and start_date <= ?",
+    [currentBusinessId(), nowIso],
+  );
+  for (const booking of due) {
+    await markBookingDeparted(booking.id, booking.start_date, true);
+  }
+  return due.length;
 }
 
 // Corrects a booking's recorded timestamps after the fact — the fix-a-typo

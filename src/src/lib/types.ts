@@ -75,9 +75,14 @@ export interface ActionLogEntry {
   entity_type: "owner" | "vehicle" | "booking";
   entity_id: string;
   entity_label: string;
-  action: "created" | "updated";
+  // "completed"/"cancelled"/"departed" are booking-only (cancelBooking,
+  // markBookingReturned, markBookingDeparted) — owner/vehicle records only
+  // ever produce "created"/"updated".
+  action: "created" | "updated" | "completed" | "cancelled" | "departed";
   // Stored as JSON text in SQLite; parsed to ActionLogChange[] by the repo
-  // layer before reaching the UI.
+  // layer before reaching the UI. Always null for the booking lifecycle
+  // actions above — the action type itself says what happened, same as
+  // "created" already does for owner/vehicle.
   changes: ActionLogChange[] | null;
   performed_by: string | null;
   created_at: string;
@@ -190,6 +195,11 @@ export interface AppSettings {
   // default on screen (a staff/audit detail), but always included when
   // printing regardless of this setting (see RemittancesReport.tsx).
   showRemittanceSummary: boolean;
+  // On by default — a still-"pending" booking gets auto-confirmed as
+  // departed (see AutoDepartureRunner) once its scheduled start_date
+  // passes, instead of waiting on staff to click Mark departed. Turning
+  // this off makes departure confirmation fully manual again.
+  autoMarkDeparted: boolean;
 }
 
 // --- Rate Matrix: destination-tier x seating-capacity pricing --------------

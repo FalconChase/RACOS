@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelEtd: false,
   dashLabelEta: false,
   showRemittanceSummary: false,
+  autoMarkDeparted: true,
 };
 
 interface SettingsRow {
@@ -23,6 +24,7 @@ interface SettingsRow {
   dashLabelEtd: number;
   dashLabelEta: number;
   showRemittanceSummary: number;
+  autoMarkDeparted: number;
 }
 
 function toAppSettings(row: SettingsRow): AppSettings {
@@ -36,6 +38,7 @@ function toAppSettings(row: SettingsRow): AppSettings {
     dashLabelEtd: row.dashLabelEtd === 1,
     dashLabelEta: row.dashLabelEta === 1,
     showRemittanceSummary: row.showRemittanceSummary === 1,
+    autoMarkDeparted: row.autoMarkDeparted === 1,
   };
 }
 
@@ -46,7 +49,8 @@ export async function getSettings(): Promise<AppSettings> {
             duration_display as durationDisplay, show_expected_payment as showExpectedPayment,
             dash_label_unit as dashLabelUnit, dash_label_lessee as dashLabelLessee,
             dash_label_etd as dashLabelEtd, dash_label_eta as dashLabelEta,
-            show_remittance_summary as showRemittanceSummary
+            show_remittance_summary as showRemittanceSummary,
+            auto_mark_departed as autoMarkDeparted
      from app_settings where id = 1`,
   );
   return rows[0] ? toAppSettings(rows[0]) : DEFAULT_SETTINGS;
@@ -60,7 +64,7 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
     `update app_settings
      set date_format = ?, time_format = ?, duration_display = ?, show_expected_payment = ?,
          dash_label_unit = ?, dash_label_lessee = ?, dash_label_etd = ?, dash_label_eta = ?,
-         show_remittance_summary = ?
+         show_remittance_summary = ?, auto_mark_departed = ?
      where id = 1`,
     [
       next.dateFormat,
@@ -72,6 +76,7 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       next.dashLabelEtd ? 1 : 0,
       next.dashLabelEta ? 1 : 0,
       next.showRemittanceSummary ? 1 : 0,
+      next.autoMarkDeparted ? 1 : 0,
     ],
   );
   return next;

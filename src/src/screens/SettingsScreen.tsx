@@ -348,10 +348,37 @@ function FactoryReset() {
 
 function summarizeChanges(entry: ActionLogEntry): string {
   if (entry.action === "created") return "Registered.";
+  if (entry.action === "completed") return "Marked returned.";
+  if (entry.action === "cancelled") return "Cancelled.";
+  if (entry.action === "departed") return "Marked departed.";
   if (!entry.changes || entry.changes.length === 0) return "Updated.";
   return entry.changes
     .map((c) => `${c.label}: ${c.old ?? "—"} → ${c.new ?? "—"}`)
     .join("; ");
+}
+
+// "registered"/"updated" cover owner/vehicle entries; the rest are
+// booking-only lifecycle events (see lib/repo/bookings.ts).
+function actionVerb(action: ActionLogEntry["action"]): string {
+  switch (action) {
+    case "created":
+      return "registered";
+    case "completed":
+      return "marked returned";
+    case "cancelled":
+      return "cancelled";
+    case "departed":
+      return "marked departed";
+    case "updated":
+    default:
+      return "updated";
+  }
+}
+
+function entityTypeLabel(entityType: ActionLogEntry["entity_type"]): string {
+  if (entityType === "owner") return "Owner";
+  if (entityType === "vehicle") return "Vehicle";
+  return "Booking";
 }
 
 // Read-only audit trail — every create/edit made to an owner or vehicle
@@ -413,11 +440,11 @@ function ActionHistory() {
               >
                 <div>
                   <div style={{ color: "var(--text-primary)" }}>
-                    <span className="font-medium">{entry.entity_type === "owner" ? "Owner" : "Vehicle"}</span>
+                    <span className="font-medium">{entityTypeLabel(entry.entity_type)}</span>
                     {" · "}
                     {entry.entity_label}
                     {" — "}
-                    {entry.action === "created" ? "registered" : "updated"}
+                    {actionVerb(entry.action)}
                   </div>
                   <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>{summarizeChanges(entry)}</div>
                 </div>
@@ -528,6 +555,25 @@ export default function SettingsScreen() {
                 className="h-5 w-5"
                 checked={settings.showExpectedPayment}
                 onChange={(e) => setSettings({ showExpectedPayment: e.target.checked })}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
+            <div className="pt-3">
+              <div className="text-base" style={{ color: "var(--text-primary)" }}>
+                Auto-mark departed once ETD passes
+              </div>
+              <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                A still-pending booking is automatically confirmed as departed (same as picking "same as scheduled ETD" on Mark departed) the moment its scheduled start time passes, instead of waiting on staff. Turn this off to require staff to click Mark departed themselves for every booking. Logged in Tools &gt; Logs the same as a manual Mark departed, noted as automatic.
+              </p>
+            </div>
+            <label className="mt-3 inline-flex shrink-0 cursor-pointer items-center">
+              <input
+                type="checkbox"
+                className="h-5 w-5"
+                checked={settings.autoMarkDeparted}
+                onChange={(e) => setSettings({ autoMarkDeparted: e.target.checked })}
               />
             </label>
           </div>

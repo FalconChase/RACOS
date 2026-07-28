@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelBooking, createBooking, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
-import type { BookingTimeUpdate } from "../lib/repo/bookings";
+import type { BookingTimeUpdate, CancellationReason } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { createCustomer, listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -17,6 +17,7 @@ import FormQuestion from "../components/FormQuestion";
 import SearchableSelect from "../components/SearchableSelect";
 import ArrivalDialog from "../components/ArrivalDialog";
 import EditBookingTimesDialog from "../components/EditBookingTimesDialog";
+import CancelBookingDialog from "../components/CancelBookingDialog";
 import type {
   ActionLogEntry,
   AppSettings,
@@ -91,7 +92,8 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   // want to see first when opening Rentals — completed/cancelled bookings
   // file into their own History subtab instead.
   const [subtab, setSubtab] = useState<Subtab>("ongoing");
-  const [confirmingCancelId, setConfirmingCancelId] = useState<string | null>(null);
+  const [cancellingFor, setCancellingFor] = useState<Booking | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   // Shown at Save time when the entered due-back is already in the past — lets
   // staff resolve whether the vehicle already came back before the booking is
   // written at all. eta is the due-back ISO the dialog displays/offers as
@@ -348,9 +350,11 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     await saveBooking(null);
   }
 
-  async function handleCancel(id: string) {
-    await cancelBooking(id);
-    setConfirmingCancelId(null);
+  async function handleCancel(id: string, reason: CancellationReason, otherDetail?: string) {
+    setCancelBusy(true);
+    await cancelBooking(id, reason, otherDetail);
+    setCancelBusy(false);
+    setCancellingFor(null);
     await refresh();
   }
 
@@ -379,7 +383,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
               key={tab}
               onClick={() => {
                 setSubtab(tab);
-                setConfirmingCancelId(null);
+                setCancellingFor(null);
               }}
               className="rounded px-4 py-1.5 text-sm font-medium capitalize"
               style={
@@ -678,73 +682,51 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
                   </td>
                   <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
                     <div className="flex justify-end gap-3">
-                      {confirmingCancelId === b.id ? (
-                        <>
-                          <span className="text-sm" style={{ color: "var(--text-danger)" }}>Cancel this booking?</span>
+                      {(b.status === "pending" || b.status === "confirmed") && (
                           <button
-                            onClick={() => handleCancel(b.id)}
+                            onClick={() => onCheckout(b.id)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-accent)" }}
+                          >
+                            Check-out
+                          </button>
+                        )}
+                        {b.status === "pending" && (
+                          <button
+                            onClick={() => setMarkDepartedFor(b)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-success)" }}
+                          >
+                            Mark departed
+                          </button>
+                        )}
+                        {b.status === "active" && (
+                          <button
+                            onClick={() => setMarkReturnedFor(b)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-success)" }}
+                          >
+                            Mark returned
+                          </button>
+                        )}
+                        {b.status !== "cancelled" && b.status !== "completed" && (
+                          <button
+                            onClick={() => setCancellingFor(b)}
                             className="text-sm font-medium"
                             style={{ color: "var(--text-danger)" }}
                           >
-                            Yes, cancel
+                            Cancel
                           </button>
+                        )}
+                        {b.actual_return_at && (
                           <button
-                            onClick={() => setConfirmingCancelId(null)}
+                            onClick={() => setEditTimesFor(b)}
                             className="text-sm font-medium"
                             style={{ color: "var(--text-secondary)" }}
                           >
-                            No
+                            Edit times
                           </button>
-                        </>
-                      ) : (
-                        <>
-                          {(b.status === "pending" || b.status === "confirmed") && (
-                            <button
-                              onClick={() => onCheckout(b.id)}
-                              className="text-sm font-medium"
-                              style={{ color: "var(--text-accent)" }}
-                            >
-                              Check-out
-                            </button>
-                          )}
-                          {b.status === "pending" && (
-                            <button
-                              onClick={() => setMarkDepartedFor(b)}
-                              className="text-sm font-medium"
-                              style={{ color: "var(--text-success)" }}
-                            >
-                              Mark departed
-                            </button>
-                          )}
-                          {b.status === "active" && (
-                            <button
-                              onClick={() => setMarkReturnedFor(b)}
-                              className="text-sm font-medium"
-                              style={{ color: "var(--text-success)" }}
-                            >
-                              Mark returned
-                            </button>
-                          )}
-                          {b.status !== "cancelled" && b.status !== "completed" && (
-                            <button
-                              onClick={() => setConfirmingCancelId(b.id)}
-                              className="text-sm font-medium"
-                              style={{ color: "var(--text-danger)" }}
-                            >
-                              Cancel
-                            </button>
-                          )}
-                          {b.actual_return_at && (
-                            <button
-                              onClick={() => setEditTimesFor(b)}
-                              className="text-sm font-medium"
-                              style={{ color: "var(--text-secondary)" }}
-                            >
-                              Edit times
-                            </button>
-                          )}
-                        </>
-                      )}
+                        )}
                     </div>
                   </td>
                 </tr>
@@ -812,14 +794,45 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
           }}
         />
       )}
+
+      {cancellingFor && (
+        <CancelBookingDialog
+          booking={cancellingFor}
+          busy={cancelBusy}
+          onCancel={() => setCancellingFor(null)}
+          onConfirm={(reason: CancellationReason, otherDetail?: string) => handleCancel(cancellingFor.id, reason, otherDetail)}
+        />
+      )}
     </div>
   );
 }
 
-// Small "edited [date]" indicator shown only once a booking actually has any
-// logged time corrections (see updateBookingTimes) — clicking it toggles a
-// popover with the full before/after history, so the fix stays visible
-// without cluttering every row that's never needed one.
+// Label for a single action_logs entry's badge/popover line — "updated" is
+// the one action with a field diff (see updateBookingTimes); the others are
+// bare markers logged by cancelBooking/markBookingReturned/markBookingDeparted
+// (see lib/repo/bookings.ts) and just need to say what happened.
+function actionLabel(action: ActionLogEntry["action"]): string {
+  switch (action) {
+    case "cancelled":
+      return "Cancelled";
+    case "completed":
+      return "Marked returned";
+    case "departed":
+      return "Marked departed";
+    case "created":
+      return "Recorded";
+    case "updated":
+    default:
+      return "Edited";
+  }
+}
+
+// Small "<action> [date]" indicator shown once a booking has any logged
+// action — time corrections (updateBookingTimes) as before, plus now
+// cancelled/completed/departed. Clicking it toggles a popover with the full
+// history (each entry's own action and, for edits, before/after values), so
+// the record stays visible without cluttering every row that's never needed
+// one. Newest entry (by created_at) drives the badge's own label/time.
 function EditHistoryBadge({ entries, settings }: { entries: ActionLogEntry[]; settings: AppSettings }) {
   const [open, setOpen] = useState(false);
   if (entries.length === 0) return null;
@@ -833,7 +846,7 @@ function EditHistoryBadge({ entries, settings }: { entries: ActionLogEntry[]; se
         className="text-sm"
         style={{ color: "var(--text-muted)", textDecoration: "underline dotted" }}
       >
-        edited {formatDateTime(latest.created_at, settings)}
+        {actionLabel(latest.action)} {formatDateTime(latest.created_at, settings)}
       </button>
       {open && (
         <>
@@ -845,7 +858,9 @@ function EditHistoryBadge({ entries, settings }: { entries: ActionLogEntry[]; se
             <div className="space-y-2.5">
               {entries.map((entry, i) => (
                 <div key={entry.id} className={i === 0 ? undefined : "pt-2.5"} style={i === 0 ? undefined : { borderTop: "0.5px solid var(--border)" }}>
-                  <div style={{ color: "var(--text-muted)" }}>{formatDateTime(entry.created_at, settings)}</div>
+                  <div style={{ color: "var(--text-muted)" }}>
+                    {actionLabel(entry.action)} · {formatDateTime(entry.created_at, settings)}
+                  </div>
                   {(entry.changes ?? []).map((c, j) => (
                     <div key={j} className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
                       {c.label}: {c.old ? formatDateTime(c.old, settings) : "—"} → {c.new ? formatDateTime(c.new, settings) : "—"}

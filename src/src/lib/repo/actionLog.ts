@@ -7,7 +7,7 @@ interface RawActionLogRow {
   entity_type: "owner" | "vehicle" | "booking";
   entity_id: string;
   entity_label: string;
-  action: "created" | "updated";
+  action: "created" | "updated" | "completed" | "cancelled" | "departed";
   changes: string | null;
   performed_by: string | null;
   created_at: string;
@@ -51,7 +51,7 @@ export async function logAction(params: {
   entityType: "owner" | "vehicle" | "booking";
   entityId: string;
   entityLabel: string;
-  action: "created" | "updated";
+  action: "created" | "updated" | "completed" | "cancelled" | "departed";
   changes?: ActionLogChange[];
 }): Promise<void> {
   const db = await getDb();

@@ -28,7 +28,7 @@ ONBOARDED   : 2026-07-25
 
 ---
 ## PHASE
-Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix, Settlements, Tools) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Settlements (Records + Remittances, PDF-verified breakdown billing, print) and a Tools tab (Car Activity vehicle timeline) have since shipped. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
+Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix, Settlements, Tools) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Settlements (Records + Remittances, PDF-verified breakdown billing, print) and a Tools tab (Car Activity vehicle timeline, then a Logs audit-trail tab) have since shipped. Every booking cancellation now requires a staff-picked reason and is checked against departure state for audit flagging; departure confirmation can happen automatically once ETD passes (toggleable in Settings). Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
 
 ---
 ## STATE
@@ -63,6 +63,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT011 | HIGH | Settlements module (Records + Remittances): payment tracking, rate-based breakdown billing on a single shared cash bucket per booking (PDF-verified against user's reference scenarios), print-ready statements, compact R/O summary toggle, editable Business name | SES008 |
 | ROT012 | MED  | Booking safety guards: pre-save absurd-duration confirmation on backdated entries, editable actual-return time with edit history, Fleet Status made read-only | SES008 |
 | ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
+| ROT014 | HIGH | Tools > Logs tab (flat most-recent-first booking history, owner/vehicle filters, sort modes, print) + full lifecycle audit trail: action_logs widened to completed/cancelled/departed; cancellation now requires a staff-picked reason + departure-state snapshot (flags cancel-after-departure red vs. blue, with a variance); auto-mark-departed setting (background runner, tagged distinct from a manual click) | SES009 |
 
 ---
 ## DECISIONS
@@ -80,6 +81,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD010 | LOCKED | Booking status (pending/active/completed) is derived from timing + actual arrival/departure timestamps, never set directly by staff; vehicle rented/available status auto-syncs with it |
 | ROD011 | LOCKED | Every vehicle must be tied to a registered Owner before it can be registered on Fleet; Owner + Vehicle share one unified Registry form |
 | ROD012 | LOCKED | Remittances breakdown billing draws from one shared cash bucket per booking (not separate scheduled/overtime buckets) — a block bills at the full rate-based amount only when it's genuinely full-length and the bucket still covers it, otherwise it absorbs the remainder and later blocks get 0; verified against the user's reference spreadsheet |
+| ROD013 | LOCKED | Every booking cancellation requires a staff-selected reason (preset options + free-text "Other"), permanently logged alongside a departure-state snapshot taken at cancellation time — read from the pre-cancellation row, never the booking's live/editable fields, so the audit trail can't be skewed by a later correction |
 
 ---
 ## FILES
@@ -93,4 +95,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
 
 ---
-# Lines: ~96 / 120 — Budget remaining: ~24 — estimate by BRAIN, CLODE to re-verify per CL010
+# Lines: 98 / 120 — Budget remaining: 22 — nearing amendment threshold (100); next addition should trim before growing further

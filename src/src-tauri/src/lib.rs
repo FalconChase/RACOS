@@ -118,6 +118,18 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0018_remittance_summary_setting.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 19,
+            description: "action_log_booking_lifecycle",
+            sql: include_str!("../migrations/0019_action_log_booking_lifecycle.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 20,
+            description: "auto_mark_departed_setting",
+            sql: include_str!("../migrations/0020_auto_mark_departed_setting.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
