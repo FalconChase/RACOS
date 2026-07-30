@@ -21,7 +21,8 @@ ONBOARDED   : 2026-07-25
 | ITEM             | VALUE |
 |------------------|-------|
 | Supabase project | RACOS — ref nnsjqnxvpkercbbwvqjj, region ap-northeast-1, org FalconBit Org |
-| Core tables      | businesses, profiles, vehicles, customers, bookings, payments (all RLS-enabled) |
+| Core tables      | businesses, profiles, vehicles, customers, bookings, payments, vehicle_locations (all RLS-enabled) |
+| GPS pipeline     | Traccar (self-hosted, replaces DAGPS) → gps-ingest Edge Function → vehicle_locations; vehicles.gps_device_id is the match key |
 | Migrations (server) | /RACOS/supabase/migrations/ |
 | Local cache      | SQLite via tauri-plugin-sql; mirrors core tables + outbox + sync_state |
 | Migrations (local) | /RACOS/src/src-tauri/migrations/ |
@@ -64,6 +65,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT012 | MED  | Booking safety guards: pre-save absurd-duration confirmation on backdated entries, editable actual-return time with edit history, Fleet Status made read-only | SES008 |
 | ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
 | ROT014 | HIGH | Tools > Logs tab (flat most-recent-first booking history, owner/vehicle filters, sort modes, print) + full lifecycle audit trail: action_logs widened to completed/cancelled/departed; cancellation now requires a staff-picked reason + departure-state snapshot (flags cancel-after-departure red vs. blue, with a variance); auto-mark-departed setting (background runner, tagged distinct from a manual click) | SES009 |
+| ROT015 | HIGH | GPS tracking pipeline (Stage 0+1 proven, Traccar replacing DAGPS): vehicle_locations table + vehicles.gps_device_id/gps_provider/gps_notes on Supabase, RLS via current_business_id(); gps-ingest Edge Function deployed; full local pipeline (Docker Traccar + Android phone) tested end-to-end with real GPS data | SES010 |
 
 ---
 ## DECISIONS
@@ -95,4 +97,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
 
 ---
-# Lines: 98 / 120 — Budget remaining: 22 — nearing amendment threshold (100); next addition should trim before growing further
+# Lines: 101 / 120 — Budget remaining: 19 — past amendment threshold (100); trim before next addition (candidate: fold ROT001-ROT006 into one summary row)

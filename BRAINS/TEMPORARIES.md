@@ -32,6 +32,7 @@
 | ROT012 | MED  | Booking safety guards — pre-save duration confirmation, editable actual-return time w/ history, Fleet Status read-only | SES008 |
 | ROT013 | MED  | Tools tab + Car Activity — per-vehicle month timeline, overlap detection, viewport-fit grid, self-clamping tooltip | SES008 |
 | ROT014 | HIGH | Tools > Logs tab (owner/vehicle filters, sort modes, print) + lifecycle audit trail — action_logs widened, cancellation requires reason + departure snapshot, auto-mark-departed setting | SES009 |
+| ROT015 | HIGH | GPS pipeline (Stage 0+1 proven) — Traccar replacing DAGPS, vehicle_locations + gps_device_id on Supabase, gps-ingest Edge Function, full local pipeline tested with real GPS data | SES010 |
 
 ---
-# Lines: 37 / 100 — Budget remaining: 63
+# Lines: 38 / 100 — Budget remaining: 62
