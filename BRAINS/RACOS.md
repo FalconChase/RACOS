@@ -29,7 +29,7 @@ ONBOARDED   : 2026-07-25
 
 ---
 ## PHASE
-Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Vehicles/Fleet, Registry (Vehicle & Owner + Owners subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix, Settlements, Tools) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Settlements (Records + Remittances, PDF-verified breakdown billing, print) and a Tools tab (Car Activity vehicle timeline, then a Logs audit-trail tab) have since shipped. Every booking cancellation now requires a staff-picked reason and is checked against departure state for audit flagging; departure confirmation can happen automatically once ETD passes (toggleable in Settings). Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
+Phase 0 build, deep into local-first UI. Desktop app has a full working screen set (Home, Fleet (simplified), Map, Registry (Vehicle & Owner + Owners + Vehicles subtabs), Customers, Bookings/Rentals, Checkout, Settings, Rate Matrix, Settlements, Tools) running entirely against the local SQLite cache. Booking lifecycle (pending/active/completed, timing-derived) and vehicle rented/available status now auto-sync end to end. Settlements (Records + Remittances, PDF-verified breakdown billing, Bucket/Recorded split modes, period filter, print) and a Tools tab (Car Activity vehicle timeline, Logs audit-trail tab) have shipped. Recorded payments can be corrected upward (never down), fully logged. Every booking cancellation requires a staff-picked reason and is checked against departure state; departure confirmation can happen automatically once ETD passes (toggleable in Settings). Province visibility is filterable by island group, and bookings gained ranked top-destination quick-picks. GPS pipeline (Traccar) proven end to end but not yet wired into the desktop app's read side. Tenant scoping is still a fixed dev placeholder (DEV_BUSINESS_ID in lib/db.ts) — Supabase Auth wiring is the acknowledged next real step, not yet started.
 
 ---
 ## STATE
@@ -52,12 +52,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 ### DONE
 | ID | PRIORITY | ITEM        | SESSION |
 |----|----------|-------------|---------|
-| ROT001 | HIGH | Tauri 2 + React + TS + Tailwind scaffold | SES001 |
-| ROT002 | HIGH | Supabase project creation + RLS schema on business_id | SES002 |
-| ROT003 | MED  | SQLite local cache schema + outbox table | SES003 |
-| ROT004 | HIGH | Local-first desktop UI: Vehicles/Customers/Bookings/Home/Checkout screens, sidebar nav, dark design-token theme, custom Date/Time pickers, Settings screen + app_settings, payment/rental-duration settings, Rentals Ongoing/History subtabs | SES004 |
-| ROT005 | MED  | Rate Matrix pricing: provinces + business_profile + seating_bands + rate_matrix schema, tier computation (1=same province as HQ, 2=same region, 3=other), custom per-city rate overrides, wired through booking form + Checkout | SES005 |
-| ROT006 | MED  | Replaced business-scoped `cities` table with a global PSGC-sourced `municipalities` table (1597 rows, embedded locally, zero runtime network calls); removed the per-city Tier-1 toggle (HQ's own province/city is now automatically Tier 1); relocated HQ province/city from Rate Matrix into a read-only Business section on Settings (one-time-set with a "Change" re-edit link) | SES006 |
+| ROT001-006 | — | Phase 0 foundation: Tauri/React/TS/Tailwind scaffold, Supabase project + RLS schema, SQLite local cache + outbox, full local-first desktop UI (core screens/theme/pickers/settings), Rate Matrix tier pricing, PSGC municipalities + HQ relocation | SES001-006 |
 | ROT008 | MED  | Rate Matrix panel on the booking form (replaces expected-payment text); pricing finalized as exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly billing rounding; half-day count kept as display-only reference | SES007 |
 | ROT009 | HIGH | Owners + Registry: `owners` table, vehicle must have an owner to register on Fleet, unified Vehicle & Owner Registry tab (Owners subtab), `action_logs` + Settings Action History for edits to optional fields, optional chassis/engine/GPS fields, structured owner address; Fleet registration simplified to Owner + seats (daily rate field removed); Rentals defaults to Ongoing subtab | SES007 |
 | ROT010 | HIGH | Booking lifecycle overhaul: status (pending/active/completed) derived from timing + actual_return_at/actual_departure_at rather than set directly; vehicle rented/available status auto-syncs with it; backdated-booking arrival confirmation + general Mark returned/Mark departed actions; live real-time overdue/departure-due counters; Home live clock; Settings > Dashboard cosmetic terminology toggles (Unit/Lessee/ETD/ETA) | SES007 |
@@ -66,6 +61,10 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
 | ROT014 | HIGH | Tools > Logs tab (flat most-recent-first booking history, owner/vehicle filters, sort modes, print) + full lifecycle audit trail: action_logs widened to completed/cancelled/departed; cancellation now requires a staff-picked reason + departure-state snapshot (flags cancel-after-departure red vs. blue, with a variance); auto-mark-departed setting (background runner, tagged distinct from a manual click) | SES009 |
 | ROT015 | HIGH | GPS tracking pipeline (Stage 0+1 proven, Traccar replacing DAGPS): vehicle_locations table + vehicles.gps_device_id/gps_provider/gps_notes on Supabase, RLS via current_business_id(); gps-ingest Edge Function deployed; full local pipeline (Docker Traccar + Android phone) tested end-to-end with real GPS data | SES010 |
+| ROT016 | MED  | Map tab (real Leaflet map, vehicle dropdown, no GPS pins yet) added as a top-level nav item; Fleet remodeled to a simplified read-mostly view (Plate/Make-Model/Status/Current Location); full vehicle admin moved to a new Registry > Vehicles subtab; car-detail popup (click a Fleet row) with spec fields, Activity History table, and user-controlled Fill/Fit image display set at upload time | SES011 |
+| ROT017 | MED  | Remittances: new "Recorded split" mode (proportionally splits actual recorded base+overtime across blocks by hours, no absorption) alongside existing Bucket mode; Remittance period date filter excludes boundary-straddling bookings with a persistent explanatory banner; calendar date pickers highlight days with booking activity; fixed toolbar overflow pushing the Print button off-screen | SES011 |
+| ROT018 | MED  | Settlements > Records payment correction: actual recorded Payment (base/overtime) can be raised but never lowered, capped at each portion's expected rate-formula amount, Expected stays fixed as basis; every correction logs to the booking's action-log history | SES011 |
+| ROT019 | MED  | Settings > Locations: show/hide provinces by island group (Luzon/Visayas/Mindanao, at least one always on) applied everywhere provinces are picked (Rate Matrix, booking destination, owner address, HQ); booking form gained up-to-10 ranked top-destination quick-pick chips above the Province/City search fields | SES011 |
 
 ---
 ## DECISIONS
@@ -84,6 +83,8 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD011 | LOCKED | Every vehicle must be tied to a registered Owner before it can be registered on Fleet; Owner + Vehicle share one unified Registry form |
 | ROD012 | LOCKED | Remittances breakdown billing draws from one shared cash bucket per booking (not separate scheduled/overtime buckets) — a block bills at the full rate-based amount only when it's genuinely full-length and the bucket still covers it, otherwise it absorbs the remainder and later blocks get 0; verified against the user's reference spreadsheet |
 | ROD013 | LOCKED | Every booking cancellation requires a staff-selected reason (preset options + free-text "Other"), permanently logged alongside a departure-state snapshot taken at cancellation time — read from the pre-cancellation row, never the booking's live/editable fields, so the audit trail can't be skewed by a later correction |
+| ROD014 | LOCKED | Recorded-payment corrections are additive only (never below the previously recorded value) and capped per portion at that portion's expected rate-formula amount; Expected payment itself is never edited and stays the correction basis |
+| ROD015 | LOCKED | Island-group province visibility is filtered only at UI option-construction call sites (never on the raw listProvinces()/listMunicipalities() result), always force-including the currently-selected value, so historical ID-to-label resolution and SearchableSelect's blank-on-missing-value behavior are never broken |
 
 ---
 ## FILES
@@ -97,4 +98,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
 
 ---
-# Lines: 101 / 120 — Budget remaining: 19 — past amendment threshold (100); trim before next addition (candidate: fold ROT001-ROT006 into one summary row)
+# Lines: 101 / 120 — Budget remaining: 19 — past amendment threshold (100); trim before next addition (candidate: fold ROT008-ROT010 into one summary row)

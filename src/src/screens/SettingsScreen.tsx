@@ -7,6 +7,7 @@ import { resetAllBookings } from "../lib/repo/bookings";
 import { factoryReset } from "../lib/repo/factoryReset";
 import { listActionLogs } from "../lib/repo/actionLog";
 import { formatDateTime } from "../lib/dateFormat";
+import { isProvinceVisible } from "../lib/islandGroups";
 import SearchableSelect from "../components/SearchableSelect";
 import ConfirmDialog from "../components/ConfirmDialog";
 import type { ActionLogEntry, BusinessProfile, DateFormat, DurationDisplay, Municipality, Province, TimeFormat } from "../lib/types";
@@ -80,6 +81,7 @@ function BusinessName() {
 }
 
 function BusinessHeadquarters() {
+  const { settings } = useSettings();
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
@@ -110,8 +112,11 @@ function BusinessHeadquarters() {
   }, []);
 
   const provinceOptions = useMemo(
-    () => provinces.map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
-    [provinces],
+    () =>
+      provinces
+        .filter((p) => p.id === draftProvinceId || isProvinceVisible(p, settings))
+        .map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
+    [provinces, settings, draftProvinceId],
   );
   const cityOptions = useMemo(
     () =>
@@ -460,6 +465,67 @@ function ActionHistory() {
   );
 }
 
+const ISLAND_GROUPS: { key: "showLuzon" | "showVisayas" | "showMindanao"; label: string }[] = [
+  { key: "showLuzon", label: "Luzon" },
+  { key: "showVisayas", label: "Visayas" },
+  { key: "showMindanao", label: "Mindanao" },
+];
+
+// Which island groups' provinces show up in Rate Matrix, booking
+// destinations, owner addresses, and HQ province — see lib/islandGroups.ts.
+// At least one must always stay on; the checkbox for whichever one is
+// currently the sole survivor gets disabled rather than letting the toggle
+// (or the defensive check in updateSettings) reject the click after the fact.
+function LocationVisibility() {
+  const { settings, setSettings } = useSettings();
+  const [error, setError] = useState<string | null>(null);
+  const onCount = ISLAND_GROUPS.filter((g) => settings[g.key]).length;
+
+  async function toggle(key: "showLuzon" | "showVisayas" | "showMindanao", value: boolean) {
+    setError(null);
+    try {
+      await setSettings({ [key]: value });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <div>
+      {error && (
+        <p className="mb-2 text-sm" style={{ color: "var(--text-danger)" }}>
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-4">
+        {ISLAND_GROUPS.map(({ key, label }) => {
+          const checked = settings[key];
+          const isLastOn = checked && onCount === 1;
+          return (
+            <label
+              key={key}
+              className="flex items-center gap-2 text-base"
+              style={{ color: isLastOn ? "var(--text-muted)" : "var(--text-primary)" }}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={isLastOn}
+                onChange={(e) => toggle(key, e.target.checked)}
+              />
+              {label}
+            </label>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
+        Only provinces from a toggled-on island group appear in Rate Matrix, booking destinations, owner
+        addresses, and HQ province. At least one must stay on.
+      </p>
+    </div>
+  );
+}
+
 export default function SettingsScreen() {
   const { settings, setSettings } = useSettings();
 
@@ -474,6 +540,13 @@ export default function SettingsScreen() {
               <BusinessHeadquarters />
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Locations</h2>
+        <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
+          <LocationVisibility />
         </div>
       </div>
 

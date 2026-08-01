@@ -12,6 +12,7 @@ import { computeExpectedPayment, resolveBookingRate } from "../lib/pricing";
 import { bookingRef } from "../lib/bookingRef";
 import { destinationLabel } from "../lib/destinationLabel";
 import { PrinterIcon } from "../components/icons";
+import DatePicker from "../components/DatePicker";
 import type {
   AppSettings,
   Booking,
@@ -48,12 +49,85 @@ const selectStyle: React.CSSProperties = {
 // scheduled duration into that many hours per block.
 type BlockHours = 12 | 24 | null;
 
+// How each block's dollar amount is computed once a breakdown is on (has no
+// effect on "Per rent", which is already a single row). See buildBookingRows
+// for the two implementations.
+//  - "bucket": today's original behavior — one shared cash bucket, a block
+//    bills the clean rate-formula amount until the bucket runs short, then
+//    whichever block happens to be last (or first-to-run-short) absorbs the
+//    entire remainder in one shot.
+//  - "recorded": every block absorbs its fair share proportionally instead —
+//    scheduled and overtime are split from their own real recorded pools
+//    (payment_amount / additional_payment), sliced by actual hours, so no
+//    single block ever carries a shortfall that belongs to another block.
+type SplitMode = "bucket" | "recorded";
+
 // ~30 seconds — guards against a near-zero excess/overtime row appearing
 // purely from floating-point drift in the hour math.
 const EPSILON_HOURS = 1 / 120;
 // A few centavos of float drift shouldn't be the difference between a block
 // qualifying for the clean full-rate amount or not.
 const EPSILON_MONEY = 0.01;
+
+// Remittance period — a From/To date range for the whole report, both blank
+// by default ("All time", today's original unfiltered behavior). A booking
+// only counts as "clean" for the period if its whole actual span (departure
+// through return, so overtime counts) fits inside [from, to] — the same
+// basis buildBookingRows already uses for everything else. A booking whose
+// span overlaps the period but isn't fully contained (started earlier, or
+// overtime ran past the end) is a "boundary" case: left out of the totals
+// entirely rather than silently included or awkwardly half-counted, and
+// surfaced instead via the boundary banner so staff can widen the range on
+// purpose if they want it in. A booking that doesn't overlap the period at
+// all is just irrelevant to it — outside, no banner mention.
+type PeriodStatus = "clean" | "boundary" | "outside";
+
+function classifyBookingForPeriod(booking: Booking, from: Date | null, to: Date | null): PeriodStatus {
+  if (!from && !to) return "clean";
+  const dep = new Date(booking.actual_departure_at ?? booking.start_date);
+  const ret = new Date(booking.actual_return_at ?? booking.end_date);
+  const overlaps = (!to || dep.getTime() <= to.getTime()) && (!from || ret.getTime() >= from.getTime());
+  if (!overlaps) return "outside";
+  const fullyContained = (!from || dep.getTime() >= from.getTime()) && (!to || ret.getTime() <= to.getTime());
+  return fullyContained ? "clean" : "boundary";
+}
+
+// Plain-language reason a boundary booking got left out — shown in the
+// banner so staff know exactly which edge it crosses without having to work
+// it out themselves.
+function boundaryReason(booking: Booking, from: Date | null, to: Date | null): string {
+  const dep = new Date(booking.actual_departure_at ?? booking.start_date);
+  const ret = new Date(booking.actual_return_at ?? booking.end_date);
+  const beforeFrom = from != null && dep.getTime() < from.getTime();
+  const afterTo = to != null && ret.getTime() > to.getTime();
+  if (beforeFrom && afterTo) return "started before this period and its overtime ran past the end";
+  if (beforeFrom) return "started before this period begins";
+  if (afterTo) return "overtime ran past this period's end";
+  return "crosses this period's edge";
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function toDateStr(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+// Every calendar day a booking's actual span touches, inclusive on both
+// ends — used to light up the Remittance period date pickers so staff can
+// see which days already have booking activity before picking a range,
+// rather than guessing.
+function datesBetween(start: Date, end: Date): string[] {
+  const dates: string[] = [];
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  while (cur.getTime() <= last.getTime()) {
+    dates.push(toDateStr(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return dates;
+}
 
 interface BreakdownRow {
   key: string;
@@ -69,33 +143,156 @@ interface BreakdownRow {
   expected: number | null;
 }
 
+// Slices `totalHours` into `blockHours`-sized segments, the last one being
+// whatever's left over (never zero-padded up to a full block). Empty array
+// when totalHours is negligible — the "no overtime at all" / degenerate case.
+function sliceHours(totalHours: number, blockHours: number): number[] {
+  if (totalHours <= EPSILON_HOURS) return [];
+  const fullBlocks = Math.floor(totalHours / blockHours + 1e-9);
+  const remainder = totalHours - fullBlocks * blockHours;
+  const segs = Array<number>(fullBlocks).fill(blockHours);
+  if (remainder > EPSILON_HOURS) segs.push(remainder);
+  return segs;
+}
+
+// Splits `pool` (a real recorded payment — base or overtime) across segments
+// proportionally to each segment's share of `totalHours`. The last segment
+// gets whatever's left after rounding the earlier ones to the cent, rather
+// than its own independently-rounded share, so the segments always sum back
+// to `pool` exactly — a rounding correction, not a business rule.
+function proportionalAmounts(segHours: number[], pool: number, totalHours: number): number[] {
+  const amounts: number[] = [];
+  let roundedSoFar = 0;
+  segHours.forEach((h, i) => {
+    if (i === segHours.length - 1) {
+      amounts.push(Math.round((pool - roundedSoFar) * 100) / 100);
+      return;
+    }
+    const raw = totalHours > EPSILON_HOURS ? (h / totalHours) * pool : 0;
+    const rounded = Math.round(raw * 100) / 100;
+    amounts.push(rounded);
+    roundedSoFar += rounded;
+  });
+  return amounts;
+}
+
+// "Recorded split" mode — see the SplitMode comment above. Scheduled duration
+// and overtime are sliced into their own independent block sequences (a
+// block never straddles the boundary here, unlike bucket mode), each
+// proportionally absorbing its share of the real payment actually recorded
+// for that pool. Worked example: 16h scheduled + 8h overtime, 1400 recorded
+// for the scheduled portion and 700 for overtime, as 12hr blocks —
+// scheduled slices to 12h + 4h (1400 split 12/16 and 4/16 -> 1050, 350),
+// overtime slices to a single 8h block (all of the 700). Every block's
+// amount always sums back to the real total, same as bucket mode — it's
+// just distributed by actual hours instead of dumped onto whichever block
+// runs out last.
+function buildRecordedSplitRows(
+  booking: Booking,
+  blockHours: 12 | 24,
+  settings: AppSettings,
+  rate: number | null,
+  durationHours: number,
+  overtimeHours: number,
+  actualDeparture: Date,
+  actualReturn: Date,
+  base: number,
+  extra: number,
+): BreakdownRow[] {
+  const schedSegs = sliceHours(durationHours, blockHours);
+  const schedAmounts = proportionalAmounts(schedSegs, base, durationHours);
+  const otSegs = sliceHours(overtimeHours, blockHours);
+  const otAmounts = proportionalAmounts(otSegs, extra, overtimeHours);
+
+  const scheduledEnd = new Date(actualDeparture.getTime() + durationHours * 3600000);
+  const rows: BreakdownRow[] = [];
+  let cursor = new Date(actualDeparture);
+
+  schedSegs.forEach((segHours, i) => {
+    const isLast = i === schedSegs.length - 1;
+    const segStart = new Date(cursor);
+    const segEnd = isLast ? scheduledEnd : new Date(cursor.getTime() + segHours * 3600000);
+    rows.push({
+      key: `${booking.id}-sched-${i + 1}`,
+      tag: `block ${i + 1}/${schedSegs.length}`,
+      etd: formatDateTime(segStart.toISOString(), settings),
+      etaMain: formatDateTime(segEnd.toISOString(), settings),
+      etaActual: null,
+      late: false,
+      duration: formatHoursAsHHMM(segHours),
+      durationExtra: null,
+      note: null,
+      amount: schedAmounts[i],
+      expected: rate != null ? computeExpectedPayment(rate, segHours) : null,
+    });
+    cursor = segEnd;
+  });
+
+  otSegs.forEach((segHours, i) => {
+    const isLast = i === otSegs.length - 1;
+    const segStart = new Date(cursor);
+    const segEnd = isLast ? new Date(actualReturn) : new Date(cursor.getTime() + segHours * 3600000);
+    rows.push({
+      key: `${booking.id}-ot-${i + 1}`,
+      tag: `overtime ${i + 1}/${otSegs.length}`,
+      etd: formatDateTime(segStart.toISOString(), settings),
+      etaMain: formatDateTime(segEnd.toISOString(), settings),
+      etaActual: null,
+      late: false,
+      duration: formatHoursAsHHMM(segHours),
+      durationExtra: null,
+      note: null,
+      amount: otAmounts[i],
+      expected: rate != null ? computeExpectedPayment(rate, segHours) : null,
+    });
+    cursor = segEnd;
+  });
+
+  return rows;
+}
+
 // Expands one booking into however many rows the current breakdown mode
 // calls for.
 //
 // "Per rent" (blockHours = null) is the booking as a single row, unchanged
 // from before this feature existed — amount is the real total collected.
+// splitMode has no effect here.
 //
 // "Per 12hr"/"Per 24hr" combines the scheduled duration and any overtime
 // (rounded to the nearest half hour) into one continuous span and slices
 // *that* into equal blocks — e.g. a 50h rental with 8h overtime is 58h
 // total, which as 12hr blocks reads 12-12-12-12-10. The tail is just
-// whatever's left over, not a separately flagged "overtime" row.
+// whatever's left over, not a separately flagged "overtime" row. Two modes
+// for how each block's amount is computed:
 //
-// Every block draws from *one* shared cash bucket — the booking's real total
-// (payment_amount + additional_payment), with no separate scheduled/overtime
-// split. Walking the blocks in order: a block bills the clean rate-formula
-// amount (e.g. 1750 for a full 12h block) only if it's a genuinely
-// full-length block AND the bucket still has enough left to cover that
-// charge. The moment either isn't true — the bucket runs short, or this is
-// the final, shorter-than-blockHours block — that block absorbs whatever's
+// "bucket" — every block draws from *one* shared cash bucket, the booking's
+// real total (payment_amount + additional_payment), with no separate
+// scheduled/overtime split. Walking the blocks in order: a block bills the
+// clean rate-formula amount (e.g. 1750 for a full 12h block) only if it's a
+// genuinely full-length block AND the bucket still has enough left to cover
+// that charge. The moment either isn't true — the bucket runs short, or this
+// is the final, shorter-than-blockHours block — that block absorbs whatever's
 // left in one shot, and every block after it is 0. This is what makes every
 // block's amount sum back to the real Subtotal/Total exactly, and it's also
 // why a block can bill the full rate even while straddling the scheduled/
 // overtime boundary (e.g. 16h scheduled + 8h overtime, still a clean 24h
-// block) as long as there's still enough real cash to cover it. Expected is
-// always the plain rate-formula amount for that block's hours, shown
-// alongside for comparison even when it happens to match.
-function buildBookingRows(booking: Booking, blockHours: BlockHours, settings: AppSettings, rate: number | null): BreakdownRow[] {
+// block) as long as there's still enough real cash to cover it.
+//
+// "recorded" — see buildRecordedSplitRows: scheduled and overtime are sliced
+// into their own independent block sequences instead, each proportionally
+// absorbing its share of the real recorded payment for that pool. No single
+// block ever absorbs a shortfall that belongs to another block or another
+// pool.
+//
+// Expected is always the plain rate-formula amount for that block's hours in
+// both modes, shown alongside for comparison even when it happens to match.
+function buildBookingRows(
+  booking: Booking,
+  blockHours: BlockHours,
+  settings: AppSettings,
+  rate: number | null,
+  splitMode: SplitMode,
+): BreakdownRow[] {
   const start = new Date(booking.start_date);
   const end = new Date(booking.end_date);
   // Completed bookings always have both actual timestamps resolved (see
@@ -135,6 +332,27 @@ function buildBookingRows(booking: Booking, blockHours: BlockHours, settings: Ap
         expected,
       },
     ];
+  }
+
+  if (splitMode === "recorded") {
+    const recordedRows = buildRecordedSplitRows(
+      booking,
+      blockHours,
+      settings,
+      rate,
+      durationHours,
+      overtimeHours,
+      actualDeparture,
+      actualReturn,
+      base,
+      extra,
+    );
+    if (recordedRows.length === 0) {
+      // Degenerate edge case (a near-zero-length booking) — fall back to the
+      // single-row view rather than showing nothing.
+      return buildBookingRows(booking, null, settings, rate, splitMode);
+    }
+    return recordedRows;
   }
 
   const totalSpanHours = durationHours + overtimeHours;
@@ -187,7 +405,7 @@ function buildBookingRows(booking: Booking, blockHours: BlockHours, settings: Ap
   if (rows.length === 0) {
     // Degenerate edge case (a near-zero-length booking) — fall back to the
     // single-row view rather than showing nothing.
-    return buildBookingRows(booking, null, settings, rate);
+    return buildBookingRows(booking, null, settings, rate, splitMode);
   }
 
   return rows;
@@ -254,6 +472,12 @@ export default function RemittancesReport() {
   // "Per 24hr" expand each booking into its block/excess/overtime rows —
   // see buildBookingRows.
   const [breakdown, setBreakdown] = useState<BlockHours>(null);
+  // Only meaningful once a breakdown is on — see the SplitMode comment above.
+  const [splitMode, setSplitMode] = useState<SplitMode>("bucket");
+  // Remittance period — both blank means "All time" (unfiltered, today's
+  // original behavior). yyyy-mm-dd strings straight from the date inputs.
+  const [periodFrom, setPeriodFrom] = useState("");
+  const [periodTo, setPeriodTo] = useState("");
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -310,12 +534,31 @@ export default function RemittancesReport() {
   // here yet — Payment is the full amount, to be revisited.)
   const completed = useMemo(() => bookings.filter((b) => b.status === "completed"), [bookings]);
 
+  const periodFromDate = periodFrom ? new Date(`${periodFrom}T00:00:00`) : null;
+  const periodToDate = periodTo ? new Date(`${periodTo}T23:59:59.999`) : null;
+
+  // Split completed bookings into "clean" (fully inside the selected
+  // Remittance period, or the period is unset) and "boundary" (overlaps the
+  // period but isn't fully contained — see classifyBookingForPeriod). Only
+  // "clean" bookings ever make it into the report/totals; "boundary" ones
+  // are surfaced via the banner instead.
+  const { inPeriod, boundary } = useMemo(() => {
+    const inPeriod: Booking[] = [];
+    const boundary: Booking[] = [];
+    for (const b of completed) {
+      const status = classifyBookingForPeriod(b, periodFromDate, periodToDate);
+      if (status === "clean") inPeriod.push(b);
+      else if (status === "boundary") boundary.push(b);
+    }
+    return { inPeriod, boundary };
+  }, [completed, periodFrom, periodTo]);
+
   // Oldest to latest by ETA/Actual — the actual return time whenever it's
   // set (always true for a completed booking), falling back to the
   // scheduled end_date otherwise.
   const byVehicle = useMemo(() => {
     const map = new Map<string, Booking[]>();
-    for (const b of completed) {
+    for (const b of inPeriod) {
       const list = map.get(b.vehicle_id) ?? [];
       list.push(b);
       map.set(b.vehicle_id, list);
@@ -328,7 +571,7 @@ export default function RemittancesReport() {
       });
     }
     return map;
-  }, [completed]);
+  }, [inPeriod]);
 
   function vehicleRows(vehicleId: string): Booking[] {
     return byVehicle.get(vehicleId) ?? [];
@@ -355,6 +598,33 @@ export default function RemittancesReport() {
   const vehiclesToShow = unitId === ALL_UNITS ? ownerVehicles : ownerVehicles.filter((v) => v.id === unitId);
   const grandTotal = vehiclesToShow.reduce((sum, v) => sum + vehicleSubtotal(v.id), 0);
   const anyRows = vehiclesToShow.some((v) => vehicleRows(v.id).length > 0);
+
+  // Boundary bookings scoped to what's actually on screen right now (the
+  // selected owner's vehicles, or just the one unit if narrowed down) —
+  // there's no point flagging a boundary case for some other owner's vehicle
+  // the staff member isn't even looking at.
+  const visibleVehicleIds = useMemo(() => new Set(vehiclesToShow.map((v) => v.id)), [vehiclesToShow]);
+  const visibleBoundaryBookings = useMemo(
+    () => boundary.filter((b) => visibleVehicleIds.has(b.vehicle_id)),
+    [boundary, visibleVehicleIds],
+  );
+  const hasPeriod = periodFromDate != null || periodToDate != null;
+
+  // Every calendar day touched by a completed booking for whichever vehicles
+  // are currently in view (narrows to just the one unit once picked) — lights
+  // up the Remittance period date pickers below so staff aren't guessing at
+  // which days have activity. Ignores the period filter itself, since the
+  // whole point is helping pick that filter in the first place.
+  const highlightedDates = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of completed) {
+      if (!visibleVehicleIds.has(b.vehicle_id)) continue;
+      const dep = new Date(b.actual_departure_at ?? b.start_date);
+      const ret = new Date(b.actual_return_at ?? b.end_date);
+      for (const d of datesBetween(dep, ret)) set.add(d);
+    }
+    return set;
+  }, [completed, visibleVehicleIds]);
 
   return (
     <div className="space-y-4">
@@ -387,8 +657,8 @@ export default function RemittancesReport() {
         Powered by RACOS
       </div>
 
-      <div className="flex items-end justify-between gap-3 print:hidden">
-        <div className="flex gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
+        <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
               Owner
@@ -430,6 +700,34 @@ export default function RemittancesReport() {
 
           <div>
             <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+              Remittance period
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="w-36">
+                <DatePicker value={periodFrom} onChange={setPeriodFrom} settings={settings} highlightedDates={highlightedDates} />
+              </div>
+              <span style={{ color: "var(--text-muted)" }}>to</span>
+              <div className="w-36">
+                <DatePicker value={periodTo} onChange={setPeriodTo} settings={settings} highlightedDates={highlightedDates} />
+              </div>
+              {(periodFrom || periodTo) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPeriodFrom("");
+                    setPeriodTo("");
+                  }}
+                  className="text-sm font-medium"
+                  style={{ color: "var(--text-accent)" }}
+                >
+                  All time
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
               Breakdown
             </label>
             <div className="flex gap-1 rounded-md p-1" style={{ background: "var(--surface-2)", border: "0.5px solid var(--border-strong)" }}>
@@ -453,17 +751,75 @@ export default function RemittancesReport() {
               ))}
             </div>
           </div>
+
+          {breakdown !== null && (
+            <div>
+              <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+                Split
+              </label>
+              <div className="flex gap-1 rounded-md p-1" style={{ background: "var(--surface-2)", border: "0.5px solid var(--border-strong)" }}>
+                {(
+                  [
+                    { value: "bucket" as const, label: "Bucket" },
+                    { value: "recorded" as const, label: "Recorded" },
+                  ]
+                ).map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setSplitMode(value)}
+                    className="rounded px-3 py-1.5 text-sm font-medium"
+                    style={
+                      splitMode === value
+                        ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                        : { color: "var(--text-secondary)" }
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <button
           onClick={() => window.print()}
-          className="flex items-center gap-2 rounded-md px-4 py-2.5 text-base"
+          className="flex shrink-0 items-center gap-2 rounded-md px-4 py-2.5 text-base"
           style={{ border: "0.5px solid var(--border-strong)", color: "var(--text-primary)" }}
         >
           <PrinterIcon size={18} />
           Print
         </button>
       </div>
+
+      {/* Persistent, not a one-off popup — stays visible for as long as the
+          current owner/unit/period combination has bookings straddling the
+          period's edge, since this is a statement about to be printed and
+          shouldn't quietly drop rows without an explanation staying on
+          screen. Boundary bookings are always excluded from the totals
+          below (never included, never gated behind a per-booking choice) —
+          widening the Remittance period is how staff bring one back in. */}
+      {!loading && ownerId && hasPeriod && visibleBoundaryBookings.length > 0 && (
+        <div
+          className="space-y-1.5 rounded-md p-3 text-sm print:block"
+          style={{ background: "var(--bg-warning)", color: "var(--text-warning)" }}
+        >
+          <p className="font-medium">
+            {visibleBoundaryBookings.length} booking{visibleBoundaryBookings.length === 1 ? "" : "s"} excluded — crosses this period's edge:
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            {visibleBoundaryBookings.map((b) => {
+              const vehicle = vehicles.find((v) => v.id === b.vehicle_id);
+              return (
+                <li key={b.id}>
+                  {bookingRef(b.id)} ({vehicle?.plate_number ?? "—"}) — {boundaryReason(b, periodFromDate, periodToDate)}
+                </li>
+              );
+            })}
+          </ul>
+          <p style={{ color: "var(--text-warning)" }}>Widen the Remittance period if you want these included.</p>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
@@ -497,6 +853,7 @@ export default function RemittancesReport() {
                   municipalities={municipalities}
                   rowRate={rowRate}
                   blockHours={breakdown}
+                  splitMode={splitMode}
                 />
               ))}
           </div>
@@ -516,13 +873,14 @@ interface UnitTableProps {
   municipalities: Municipality[];
   rowRate: (booking: Booking) => number | null;
   blockHours: BlockHours;
+  splitMode: SplitMode;
 }
 
 // One vehicle's remittance lines — a compact statement block (section header
 // with a subtotal, then the 6-column row table) rather than the app's usual
 // fully-gridded operational table, since this is meant to read like a report
 // handed to an owner, not a data-entry screen.
-function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, municipalities, rowRate, blockHours }: UnitTableProps) {
+function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, municipalities, rowRate, blockHours, splitMode }: UnitTableProps) {
   const showSummary = settings.showRemittanceSummary;
 
   return (
@@ -573,7 +931,7 @@ function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, m
             const rate = rowRate(b);
             const dest = destinationLabel(b, provinces, municipalities);
 
-            const blockRows = buildBookingRows(b, blockHours, settings, rate).map((row) => (
+            const blockRows = buildBookingRows(b, blockHours, settings, rate, splitMode).map((row) => (
               <tr key={row.key} style={{ breakInside: "avoid" }}>
                 <td
                   className="px-3 py-2 font-mono text-sm"

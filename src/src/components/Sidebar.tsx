@@ -10,6 +10,7 @@ import {
   SettingsIcon,
   PanelLeftIcon,
   MapPinIcon,
+  MapIcon,
   ToolIcon,
 } from "./icons";
 import type { Tab } from "../App";
@@ -23,6 +24,11 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
   { id: "rateMatrix", label: "Rate Matrix", icon: MapPinIcon },
   { id: "settlements", label: "Settlements", icon: ReceiptIcon },
   { id: "tools", label: "Tools", icon: ToolIcon },
+  // Preparatory view for the GPS/live-tracking feature (vehicle_locations on
+  // Supabase, gps-ingest Edge Function — see BRAINS/PLANS.md ROP006). Fully
+  // clickable and shows a real, working map — just no vehicle pins yet, since
+  // the desktop app has no Supabase read access wired up (blocked on ROT007).
+  { id: "map", label: "Map", icon: MapIcon },
 ];
 
 // Shown in the reference design but not built yet — kept visible (dimmed,

@@ -4,6 +4,9 @@
 
 export type VehicleStatus = "available" | "rented" | "maintenance" | "retired";
 
+// How car_image fits its display frame — see Vehicle.car_image_fit below.
+export type VehicleImageFit = "cover" | "contain";
+
 export interface Vehicle {
   id: string;
   business_id: string;
@@ -34,6 +37,18 @@ export interface Vehicle {
   gps_device_id: string | null;
   gps_provider: string | null;
   gps_notes: string | null;
+  // Local-only detail fields for the Fleet car-detail popup — no Supabase
+  // counterpart, never synced (see migration 0021_vehicle_local_details.sql).
+  // car_image is a base64 data URL, embedded in the row itself.
+  fuel: string | null;
+  fuel_capacity: string | null;
+  transmission: string | null;
+  car_image: string | null;
+  // How car_image fits the popup's square frame — "cover" crops to fill,
+  // "contain" shrinks to show the whole image, letterboxed if needed. Set
+  // alongside car_image on the Registry Vehicles edit form (see migration
+  // 0022_vehicle_image_fit.sql). Defaults to "cover" at the DB level.
+  car_image_fit: VehicleImageFit;
   created_at: string;
   updated_at: string;
 }
@@ -200,6 +215,13 @@ export interface AppSettings {
   // passes, instead of waiting on staff to click Mark departed. Turning
   // this off makes departure confirmation fully manual again.
   autoMarkDeparted: boolean;
+  // Which island groups' provinces show up in pickers/reference lists (Rate
+  // Matrix, booking destination, owner address, HQ province) — see
+  // lib/islandGroups.ts. All on by default; at least one must always stay on
+  // (enforced in Settings > Locations, not at the DB level).
+  showLuzon: boolean;
+  showVisayas: boolean;
+  showMindanao: boolean;
 }
 
 // --- Rate Matrix: destination-tier x seating-capacity pricing --------------

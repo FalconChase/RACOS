@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelBooking, createBooking, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
-import type { BookingTimeUpdate, CancellationReason } from "../lib/repo/bookings";
+import { cancelBooking, createBooking, getTopDestinations, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
+import type { BookingTimeUpdate, CancellationReason, TopDestination } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { createCustomer, listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -11,6 +11,7 @@ import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatDuration, formatHoursMinutes } from "../lib/duration";
 import { computeTier, findSeatingBand, resolveBookingRate, resolveRate } from "../lib/pricing";
+import { isProvinceVisible } from "../lib/islandGroups";
 import DatePicker from "../components/DatePicker";
 import TimePicker from "../components/TimePicker";
 import FormQuestion from "../components/FormQuestion";
@@ -86,6 +87,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   const [rateMatrix, setRateMatrix] = useState<RateMatrixRow[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [customRates, setCustomRates] = useState<CustomRate[]>([]);
+  const [topDestinations, setTopDestinations] = useState<TopDestination[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   // Ongoing (pending/confirmed/active) rentals is what staff almost always
@@ -138,7 +140,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
 
   async function refresh() {
     setLoading(true);
-    const [b, v, c, p, profile, bands, matrix, munis, customRts, logs] = await Promise.all([
+    const [b, v, c, p, profile, bands, matrix, munis, customRts, logs, topDests] = await Promise.all([
       listBookings(),
       listVehicles(),
       listCustomers(),
@@ -149,6 +151,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
       listMunicipalities(),
       listCustomRates(),
       listActionLogsByType("booking"),
+      getTopDestinations(),
     ]);
     setBookings(b);
     setVehicles(v);
@@ -160,6 +163,7 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     setMunicipalities(munis);
     setCustomRates(customRts);
     setBookingLogs(logs);
+    setTopDestinations(topDests);
     setLoading(false);
   }
 
@@ -197,9 +201,16 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   // Destination search is province-first: pick a province (required), then
   // optionally narrow down to a specific city/municipality within it. Every
   // municipality is selectable — no admin pre-registration or toggle needed.
+  // Always keeps the already-selected province visible even if its island
+  // group is toggled off — otherwise re-opening this form on an existing
+  // booking would show a blank search box despite destinationProvinceId
+  // still holding a real value.
   const provinceOptions = useMemo(
-    () => provinces.map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
-    [provinces],
+    () =>
+      provinces
+        .filter((p) => p.id === destinationProvinceId || isProvinceVisible(p, settings))
+        .map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
+    [provinces, settings, destinationProvinceId],
   );
 
   const destinationMunicipalityOptions = useMemo(
@@ -209,6 +220,25 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
         .map((m) => ({ value: m.id, label: m.name })),
     [municipalities, destinationProvinceId],
   );
+
+  // Top-10 most-picked destination cities, resolved to a name/province for
+  // the quick-pick chips above the search fields — getTopDestinations()
+  // already returns just the id/count ranking, ordered most-picked first.
+  const topDestinationChips = useMemo(
+    () =>
+      topDestinations
+        .map((td) => {
+          const m = municipalities.find((x) => x.id === td.municipalityId);
+          return m ? { municipality: m, count: td.count } : null;
+        })
+        .filter((x): x is { municipality: Municipality; count: number } => x !== null),
+    [topDestinations, municipalities],
+  );
+
+  function selectTopDestination(m: Municipality) {
+    setDestinationProvinceId(m.province_id);
+    setDestinationCityId(m.id);
+  }
 
   function handleDestinationProvinceChange(provinceId: string) {
     setDestinationProvinceId(provinceId);
@@ -448,6 +478,26 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
           </FormQuestion>
 
           <FormQuestion label="Destination *">
+            {topDestinationChips.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {topDestinationChips.map(({ municipality, count }) => (
+                  <button
+                    key={municipality.id}
+                    type="button"
+                    onClick={() => selectTopDestination(municipality)}
+                    title={`Picked ${count} time${count === 1 ? "" : "s"} before`}
+                    className="rounded-full px-3 py-1 text-sm"
+                    style={
+                      destinationCityId === municipality.id
+                        ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                        : { background: "var(--surface-2)", color: "var(--text-secondary)" }
+                    }
+                  >
+                    {municipality.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex flex-col gap-2 sm:flex-row">
               <div className="flex-1">
                 <SearchableSelect

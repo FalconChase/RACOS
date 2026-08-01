@@ -14,6 +14,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelEta: false,
   showRemittanceSummary: false,
   autoMarkDeparted: true,
+  showLuzon: true,
+  showVisayas: true,
+  showMindanao: true,
 };
 
 interface SettingsContextValue {

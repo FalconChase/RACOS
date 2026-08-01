@@ -3,6 +3,7 @@ import { queueOutbox } from "./outbox";
 import { updateVehicleStatus } from "./vehicles";
 import { diffField, logAction } from "./actionLog";
 import { bookingRef } from "../bookingRef";
+import { formatHHMM } from "../duration";
 import type { ActionLogChange, Booking, BookingStatus } from "../types";
 
 // Cancellation reasons offered on CancelBookingDialog — kept narrow and
@@ -29,6 +30,85 @@ export async function getBookingById(id: string): Promise<Booking | null> {
   const db = await getDb();
   const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
   return rows[0] ?? null;
+}
+
+export interface TopDestination {
+  municipalityId: string;
+  count: number;
+}
+
+// The most-picked destination cities/municipalities across every booking
+// (any status — this is about what staff search for most, not settled
+// revenue), for the Rentals form's quick-pick chips. Cancelled bookings
+// still count: staff picked that destination when filling out the form
+// regardless of how the booking later turned out.
+export async function getTopDestinations(limit = 10): Promise<TopDestination[]> {
+  const db = await getDb();
+  return db.select<TopDestination[]>(
+    `select destination_city_id as municipalityId, count(*) as count
+       from bookings
+      where business_id = ? and destination_city_id is not null
+      group by destination_city_id
+      order by count desc
+      limit ?`,
+    [currentBusinessId(), limit],
+  );
+}
+
+// One row of a vehicle's recent activity, as shown on the Fleet car-detail
+// popup's Activity History table.
+export interface VehicleActivityEntry {
+  id: string;
+  date: string; // ISO — the booking's start_date ("Out")
+  lessee: string;
+  destination: string;
+  durationLabel: string; // "HH:MM"
+}
+
+interface VehicleActivityRow {
+  id: string;
+  start_date: string;
+  end_date: string;
+  actual_departure_at: string | null;
+  actual_return_at: string | null;
+  customer_name: string | null;
+  province_name: string | null;
+  municipality_name: string | null;
+}
+
+// Last `limit` bookings for a vehicle, excluding cancelled ones, for the
+// Fleet car-detail popup. Duration prefers the actual departure/return
+// timestamps when the booking has them recorded, falling back to the
+// scheduled start/end otherwise — same convention Settlements/Tools use.
+export async function listRecentActivityForVehicle(
+  vehicleId: string,
+  limit = 10,
+): Promise<VehicleActivityEntry[]> {
+  const db = await getDb();
+  const rows = await db.select<VehicleActivityRow[]>(
+    `select b.id, b.start_date, b.end_date, b.actual_departure_at, b.actual_return_at,
+            c.full_name as customer_name, p.name as province_name, m.name as municipality_name
+       from bookings b
+       left join customers c on c.id = b.customer_id
+       left join provinces p on p.id = b.destination_province_id
+       left join municipalities m on m.id = b.destination_city_id
+      where b.vehicle_id = ? and b.status != 'cancelled'
+      order by b.start_date desc
+      limit ?`,
+    [vehicleId, limit],
+  );
+
+  return rows.map((r) => {
+    const start = r.actual_departure_at ? new Date(r.actual_departure_at) : new Date(r.start_date);
+    const end = r.actual_return_at ? new Date(r.actual_return_at) : new Date(r.end_date);
+    return {
+      id: r.id,
+      date: r.start_date,
+      lessee: r.customer_name ?? "—",
+      destination: r.municipality_name ?? r.province_name ?? "—",
+      durationLabel: formatHHMM(start, end),
+    };
+  });
 }
 
 export interface NewBookingInput {
@@ -327,6 +407,72 @@ export async function updateBookingTimes(id: string, updates: BookingTimeUpdate)
 
   const changes = fields
     .map((f) => diffField(f, TIME_FIELD_LABELS[f], before[f] as string | null, updated[f] as string | null))
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+
+  if (changes.length > 0) {
+    await logAction({
+      entityType: "booking",
+      entityId: id,
+      entityLabel: bookingRef(id),
+      action: "updated",
+      changes,
+    });
+  }
+
+  return updated;
+}
+
+// Corrects a completed booking's actually-recorded payment figures after the
+// fact — the fix for staff forgetting to log a payment (especially the
+// overtime top-up) at Mark-returned time. Deliberately one-directional: a
+// correction may only raise a figure, never lower it — this is a floor
+// check against whatever's already on the row, enforced here regardless of
+// what the caller passes. The upper bound (never recording more than the
+// rate-formula expected amount) depends on a resolved rate, which this repo
+// layer doesn't have easy access to — so that cap is the caller's
+// responsibility (see recordedExpected/overtimeExpected in
+// SettlementsScreen.tsx) before this ever gets called. Logged to
+// action_logs the same way owner/vehicle edits are.
+export interface PaymentCorrectionInput {
+  payment_amount?: string;
+  additional_payment?: string;
+}
+
+const PAYMENT_FIELD_LABELS: Record<keyof PaymentCorrectionInput, string> = {
+  payment_amount: "Recorded payment",
+  additional_payment: "Overtime payment",
+};
+
+export async function correctBookingPayment(id: string, patch: PaymentCorrectionInput): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+
+  const fields = (Object.keys(patch) as (keyof PaymentCorrectionInput)[]).filter((k) => patch[k] !== undefined);
+  if (fields.length === 0) return before;
+
+  for (const field of fields) {
+    const oldValue = before[field] ? Number(before[field]) : 0;
+    const newValue = Number(patch[field]);
+    if (!(newValue >= oldValue)) {
+      throw new Error(`${PAYMENT_FIELD_LABELS[field]} can't be corrected down — it can only be raised.`);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const setClauses = [...fields.map((f) => `${f} = ?`), "updated_at = ?"];
+  const args: (string | null)[] = [...fields.map((f) => patch[f] ?? null), now, id];
+
+  await db.execute(`update bookings set ${setClauses.join(", ")} where id = ?`, args);
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+
+  const changes = fields
+    .map((f) => diffField(f, PAYMENT_FIELD_LABELS[f], before[f] as string | null, updated[f] as string | null))
     .filter((c): c is NonNullable<typeof c> => c !== null);
 
   if (changes.length > 0) {

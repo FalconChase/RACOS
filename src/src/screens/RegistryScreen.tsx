@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { createOwner, deleteOwner, listOwners, updateOwner } from "../lib/repo/owners";
-import { createVehicle } from "../lib/repo/vehicles";
+import {
+  createVehicle,
+  deleteVehicle,
+  listVehicles,
+  updateVehicle,
+  updateVehicleStatus,
+} from "../lib/repo/vehicles";
 import { listMunicipalities, listProvinces } from "../lib/repo/locations";
+import { useSettings } from "../lib/settingsContext";
+import { isProvinceVisible } from "../lib/islandGroups";
 import FormQuestion from "../components/FormQuestion";
 import SearchableSelect from "../components/SearchableSelect";
-import type { Municipality, Owner, Province } from "../lib/types";
+import type { Municipality, Owner, Province, Vehicle, VehicleImageFit, VehicleStatus } from "../lib/types";
 
 const NEW_OWNER = "__new__";
 
-type Subtab = "vehicleOwner" | "owners";
+type Subtab = "vehicleOwner" | "owners" | "vehicles";
 
 const inputStyle: React.CSSProperties = {
   border: "0.5px solid var(--border-strong)",
@@ -17,6 +25,13 @@ const inputStyle: React.CSSProperties = {
 };
 
 const labelStyle: React.CSSProperties = { color: "var(--text-secondary)" };
+
+const STATUS_STYLES: Record<VehicleStatus, React.CSSProperties> = {
+  available: { background: "var(--bg-success)", color: "var(--text-success)" },
+  rented: { background: "var(--bg-warning)", color: "var(--text-warning)" },
+  maintenance: { background: "var(--bg-danger)", color: "var(--text-danger)" },
+  retired: { background: "var(--surface-1)", color: "var(--text-muted)" },
+};
 
 export default function RegistryScreen() {
   const [subtab, setSubtab] = useState<Subtab>("vehicleOwner");
@@ -28,6 +43,7 @@ export default function RegistryScreen() {
           [
             { id: "vehicleOwner" as const, label: "Vehicle & Owner" },
             { id: "owners" as const, label: "Owners" },
+            { id: "vehicles" as const, label: "Vehicles" },
           ]
         ).map(({ id, label }) => (
           <button
@@ -45,7 +61,9 @@ export default function RegistryScreen() {
         ))}
       </div>
 
-      {subtab === "vehicleOwner" ? <VehicleOwnerForm /> : <OwnersList />}
+      {subtab === "vehicleOwner" && <VehicleOwnerForm />}
+      {subtab === "owners" && <OwnersList />}
+      {subtab === "vehicles" && <VehiclesList />}
     </div>
   );
 }
@@ -57,6 +75,7 @@ function combineAddress(municipality: Municipality | undefined, province: Provin
 }
 
 function VehicleOwnerForm() {
+  const { settings } = useSettings();
   const [owners, setOwners] = useState<Owner[]>([]);
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
@@ -98,9 +117,15 @@ function VehicleOwnerForm() {
 
   const isNewOwner = ownerId === NEW_OWNER;
 
+  // Always keeps the already-selected province visible even if its island
+  // group is toggled off, same reasoning as BookingsScreen's destination
+  // picker.
   const provinceOptions = useMemo(
-    () => provinces.map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
-    [provinces],
+    () =>
+      provinces
+        .filter((p) => p.id === newOwnerProvinceId || isProvinceVisible(p, settings))
+        .map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
+    [provinces, settings, newOwnerProvinceId],
   );
   const municipalityOptions = useMemo(
     () =>
@@ -502,6 +527,7 @@ function OwnerEditRow({
   onCancel: () => void;
   onSaved: () => void;
 }) {
+  const { settings } = useSettings();
   const [fullName, setFullName] = useState(owner.full_name);
   const [provinceId, setProvinceId] = useState(owner.address_province_id ?? "");
   const [municipalityId, setMunicipalityId] = useState(owner.address_municipality_id ?? "");
@@ -511,8 +537,11 @@ function OwnerEditRow({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const provinceOptions = useMemo(
-    () => provinces.map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
-    [provinces],
+    () =>
+      provinces
+        .filter((p) => p.id === provinceId || isProvinceVisible(p, settings))
+        .map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
+    [provinces, settings, provinceId],
   );
   const municipalityOptions = useMemo(
     () => municipalities.filter((m) => m.province_id === provinceId).map((m) => ({ value: m.id, label: m.name })),
@@ -611,5 +640,378 @@ function OwnerEditRow({
         </button>
       </div>
     </div>
+  );
+}
+
+// --- Vehicles: full detail table with edit + delete -------------------------
+//
+// This is where vehicle editing and deletion actually live now. Fleet only
+// shows a simplified read view (plate, make/model, status, current
+// location) — full details (year, seats, owner, chassis/engine/GPS fields)
+// and the edit/delete actions moved here so Fleet can stay focused on the
+// day-to-day operational view.
+
+function VehiclesList() {
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [owners, setOwners] = useState<Owner[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Separate from editingId (the full vehicle-details edit row below) — this
+  // only ever swaps the Status pill for a dropdown, and only offers
+  // available/maintenance/retired. "rented" is never a manual choice: it's
+  // set automatically the moment a booking actually goes active (see
+  // updateVehicleStatus calls in lib/repo/bookings.ts) and cleared the same
+  // way on return, so there's nothing to hand-edit while a vehicle reads
+  // "rented" — the edit affordance is hidden for that state entirely.
+  const [statusEditId, setStatusEditId] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    const [v, o] = await Promise.all([listVehicles(), listOwners()]);
+    setVehicles(v);
+    setOwners(o);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  function ownerLabel(id: string | null) {
+    if (!id) return "—";
+    return owners.find((o) => o.id === id)?.full_name ?? "—";
+  }
+
+  async function handleStatusChange(id: string, status: VehicleStatus) {
+    await updateVehicleStatus(id, status);
+    await refresh();
+  }
+
+  async function handleDelete(id: string) {
+    setDeleteError(null);
+    try {
+      await deleteVehicle(id);
+      await refresh();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (loading) {
+    return <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {deleteError && (
+        <div
+          className="flex items-start justify-between gap-4 rounded-md p-3 text-sm"
+          style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
+        >
+          <span>{deleteError}</span>
+          <button onClick={() => setDeleteError(null)} className="shrink-0 font-medium">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {vehicles.length === 0 ? (
+        <p className="text-base" style={{ color: "var(--text-muted)" }}>
+          No vehicles yet — register one from the Vehicle &amp; Owner tab.
+        </p>
+      ) : (
+        <table className="w-full border-collapse text-left text-base">
+          <thead>
+            <tr style={{ background: "var(--surface-1)" }}>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Plate</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Make / model</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Year</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Seats</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Owner</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>Status</th>
+              <th className="px-3 py-2.5 font-semibold" style={{ border: "0.5px solid var(--border)" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {vehicles.map((v) =>
+              editingId === v.id ? (
+                <VehicleEditRow
+                  key={v.id}
+                  vehicle={v}
+                  owners={owners}
+                  onCancel={() => setEditingId(null)}
+                  onSaved={async () => {
+                    setEditingId(null);
+                    await refresh();
+                  }}
+                />
+              ) : (
+                <tr key={v.id}>
+                  <td className="px-3 py-2.5 font-medium" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{v.plate_number}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
+                    {[v.make, v.model].filter(Boolean).join(" ") || "—"}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.year ?? "—"}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{v.seats ?? "—"}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{ownerLabel(v.owner_id)}</td>
+                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
+                    {statusEditId === v.id ? (
+                      <select
+                        autoFocus
+                        value={v.status}
+                        onChange={async (e) => {
+                          await handleStatusChange(v.id, e.target.value as VehicleStatus);
+                          setStatusEditId(null);
+                        }}
+                        onBlur={() => setStatusEditId(null)}
+                        className="rounded-full border-0 px-3 py-1.5 text-sm font-medium"
+                        style={STATUS_STYLES[v.status]}
+                      >
+                        <option value="available">available</option>
+                        <option value="maintenance">maintenance</option>
+                        <option value="retired">retired</option>
+                      </select>
+                    ) : (
+                      <div className="flex items-center gap-2.5">
+                        <span className="rounded-full px-3 py-1.5 text-sm font-medium" style={STATUS_STYLES[v.status]}>
+                          {v.status}
+                        </span>
+                        {v.status !== "rented" && (
+                          <button
+                            onClick={() => setStatusEditId(v.id)}
+                            className="text-sm"
+                            style={{ color: "var(--text-accent)" }}
+                          >
+                            Edit status
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setEditingId(v.id)}
+                        className="text-sm font-medium"
+                        style={{ color: "var(--text-accent)" }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDelete(v.id)}
+                        className="text-sm font-medium"
+                        style={{ color: "var(--text-danger)" }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function VehicleEditRow({
+  vehicle,
+  owners,
+  onCancel,
+  onSaved,
+}: {
+  vehicle: Vehicle;
+  owners: Owner[];
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [plateNumber, setPlateNumber] = useState(vehicle.plate_number);
+  const [make, setMake] = useState(vehicle.make ?? "");
+  const [model, setModel] = useState(vehicle.model ?? "");
+  const [year, setYear] = useState(vehicle.year != null ? String(vehicle.year) : "");
+  const [seats, setSeats] = useState(vehicle.seats != null ? String(vehicle.seats) : "");
+  const [ownerId, setOwnerId] = useState(vehicle.owner_id ?? "");
+  const [chassisNumber, setChassisNumber] = useState(vehicle.chassis_number ?? "");
+  const [engineNumber, setEngineNumber] = useState(vehicle.engine_number ?? "");
+  const [gpsDeviceId, setGpsDeviceId] = useState(vehicle.gps_device_id ?? "");
+  const [gpsProvider, setGpsProvider] = useState(vehicle.gps_provider ?? "");
+  const [gpsNotes, setGpsNotes] = useState(vehicle.gps_notes ?? "");
+  const [fuel, setFuel] = useState(vehicle.fuel ?? "");
+  const [fuelCapacity, setFuelCapacity] = useState(vehicle.fuel_capacity ?? "");
+  const [transmission, setTransmission] = useState(vehicle.transmission ?? "");
+  // Local-only — read once via a file picker and embedded as a base64 data
+  // URL directly in the row (see migration 0021_vehicle_local_details.sql),
+  // so it travels with the local racos.db file rather than a dangling path.
+  const [carImage, setCarImage] = useState(vehicle.car_image ?? "");
+  // How the image should sit in the (fixed-size) popup frame — "cover" crops
+  // to fill it, "contain" shrinks to show the whole image. The preview box
+  // below is the same size as the Fleet popup's frame, so what's previewed
+  // here is exactly what shows there.
+  const [carImageFit, setCarImageFit] = useState<VehicleImageFit>(vehicle.car_image_fit);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setCarImage(String(reader.result));
+    reader.readAsDataURL(file);
+  }
+
+  const canSave = useMemo(
+    () => Boolean(plateNumber.trim()) && Boolean(make.trim()) && Boolean(model.trim()) && Boolean(seats.trim()) && Boolean(ownerId),
+    [plateNumber, make, model, seats, ownerId],
+  );
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaveError(null);
+    setSaving(true);
+    try {
+      await updateVehicle(vehicle.id, {
+        plate_number: plateNumber.trim(),
+        make: make.trim(),
+        model: model.trim(),
+        year: year.trim() ? Number(year) : null,
+        seats: Number(seats),
+        owner_id: ownerId,
+        chassis_number: chassisNumber.trim() || null,
+        engine_number: engineNumber.trim() || null,
+        gps_device_id: gpsDeviceId.trim() || null,
+        gps_provider: gpsProvider.trim() || null,
+        gps_notes: gpsNotes.trim() || null,
+        fuel: fuel.trim() || null,
+        fuel_capacity: fuelCapacity.trim() || null,
+        transmission: transmission.trim() || null,
+        car_image: carImage || null,
+        car_image_fit: carImageFit,
+      });
+      onSaved();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td colSpan={7} className="p-0" style={{ border: "0.5px solid var(--border)" }}>
+        <div className="space-y-3 p-4" style={{ background: "var(--surface-1)" }}>
+          {saveError && (
+            <div
+              className="flex items-start justify-between gap-4 rounded-md p-3 text-sm"
+              style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
+            >
+              <span>{saveError}</span>
+              <button onClick={() => setSaveError(null)} className="shrink-0 font-medium">
+                Dismiss
+              </button>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Plate number *" value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Make *" value={make} onChange={(e) => setMake(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Model *" value={model} onChange={(e) => setModel(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Year" type="number" value={year} onChange={(e) => setYear(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Seats *" type="number" min={1} value={seats} onChange={(e) => setSeats(e.target.value)} />
+            <select className="rounded-md px-3 py-2.5 text-base" style={inputStyle} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">Owner *</option>
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>{o.full_name}</option>
+              ))}
+            </select>
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Chassis number" value={chassisNumber} onChange={(e) => setChassisNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Engine number" value={engineNumber} onChange={(e) => setEngineNumber(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS device ID" value={gpsDeviceId} onChange={(e) => setGpsDeviceId(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS provider" value={gpsProvider} onChange={(e) => setGpsProvider(e.target.value)} />
+            <input className="col-span-2 rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS notes" value={gpsNotes} onChange={(e) => setGpsNotes(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Fuel" value={fuel} onChange={(e) => setFuel(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Fuel capacity" value={fuelCapacity} onChange={(e) => setFuelCapacity(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Transmission" value={transmission} onChange={(e) => setTransmission(e.target.value)} />
+          </div>
+
+          <div className="flex items-start gap-4">
+            {/* Same frame size as the Fleet detail popup, so what's previewed
+                here is exactly what shows there. */}
+            {carImage ? (
+              <img
+                src={carImage}
+                alt="Vehicle"
+                className="h-72 w-72 shrink-0 rounded-md"
+                style={{ border: "0.5px solid var(--border)", objectFit: carImageFit, background: "var(--surface-2)" }}
+              />
+            ) : (
+              <div
+                className="flex h-72 w-72 shrink-0 items-center justify-center rounded-md text-xs"
+                style={{ border: "0.5px solid var(--border)", color: "var(--text-muted)" }}
+              >
+                No image
+              </div>
+            )}
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  Car image (local only — not synced to the server)
+                </label>
+                <input type="file" accept="image/*" onChange={handleImageChange} className="text-sm" style={{ color: "var(--text-secondary)" }} />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                  How it fits the frame
+                </label>
+                <div className="flex gap-2 rounded-md p-1" style={{ background: "var(--surface-2)", width: "fit-content" }}>
+                  {(
+                    [
+                      { id: "cover" as const, label: "Fill frame" },
+                      { id: "contain" as const, label: "Fit frame" },
+                    ]
+                  ).map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setCarImageFit(id)}
+                      className="rounded px-3 py-1.5 text-sm font-medium"
+                      style={
+                        carImageFit === id
+                          ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                          : { color: "var(--text-secondary)" }
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {carImage && (
+                <button type="button" onClick={() => setCarImage("")} className="self-start text-sm font-medium" style={{ color: "var(--text-danger)" }}>
+                  Remove image
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              disabled={saving || !canSave}
+              className="rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button onClick={onCancel} className="rounded-md px-4 py-2 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
   );
 }

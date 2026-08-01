@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { listBookings } from "../lib/repo/bookings";
+import { correctBookingPayment, listBookings } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -75,9 +75,12 @@ export default function SettlementsScreen() {
   const [customRates, setCustomRates] = useState<CustomRate[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [loading, setLoading] = useState(true);
+  // Only one row at a time can have its Payment being corrected — see
+  // PaymentEditRow below.
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
 
-  useEffect(() => {
-    Promise.all([
+  async function refresh() {
+    const [b, v, c, p, profile, bands, matrix, customRts, munis] = await Promise.all([
       listBookings(),
       listVehicles(),
       listCustomers(),
@@ -87,18 +90,21 @@ export default function SettlementsScreen() {
       listRateMatrix(),
       listCustomRates(),
       listMunicipalities(),
-    ]).then(([b, v, c, p, profile, bands, matrix, customRts, munis]) => {
-      setBookings(b);
-      setVehicles(v);
-      setCustomers(c);
-      setProvinces(p);
-      setBusinessProfile(profile);
-      setSeatingBands(bands);
-      setRateMatrix(matrix);
-      setCustomRates(customRts);
-      setMunicipalities(munis);
-      setLoading(false);
-    });
+    ]);
+    setBookings(b);
+    setVehicles(v);
+    setCustomers(c);
+    setProvinces(p);
+    setBusinessProfile(profile);
+    setSeatingBands(bands);
+    setRateMatrix(matrix);
+    setCustomRates(customRts);
+    setMunicipalities(munis);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    refresh();
   }, []);
 
   function vehicleLabel(id: string) {
@@ -188,6 +194,14 @@ export default function SettlementsScreen() {
                 const expectedPaymentText =
                   recomputedExpected != null ? formatMoney(recomputedExpected) : b.expected_payment ?? "—";
 
+                // The two separate caps a payment correction can never
+                // exceed — see PaymentEditRow. Split out from the combined
+                // recomputedExpected above the same way RemittancesReport's
+                // buildBookingSummary does.
+                const recordedExpected = settled && rate != null ? computeExpectedPayment(rate, durationHours) : null;
+                const overtimeExpected =
+                  settled && overtimeHours > 0 && rate != null ? computeExpectedPayment(rate, overtimeHours) : null;
+
                 const hasArrivalDiff = actualReturn !== null && actualReturn.getTime() !== end.getTime();
                 const overtimeColor = overtime !== "—" && overtime !== "00:00" ? "var(--text-danger)" : "var(--text-secondary)";
                 const statusStyle = STATUS_STYLES[b.status];
@@ -199,6 +213,23 @@ export default function SettlementsScreen() {
                 const additionalPayment = b.additional_payment ? Number(b.additional_payment) : null;
                 const paymentTotal =
                   basePayment != null || additionalPayment != null ? (basePayment ?? 0) + (additionalPayment ?? 0) : null;
+
+                if (editingPaymentId === b.id) {
+                  return (
+                    <PaymentEditRow
+                      key={b.id}
+                      booking={b}
+                      recordedExpected={recordedExpected}
+                      overtimeExpected={overtimeExpected}
+                      overtimeHours={overtimeHours}
+                      onCancel={() => setEditingPaymentId(null)}
+                      onSaved={async () => {
+                        setEditingPaymentId(null);
+                        await refresh();
+                      }}
+                    />
+                  );
+                }
 
                 return (
                   <tr key={b.id}>
@@ -259,6 +290,17 @@ export default function SettlementsScreen() {
                           incl. {formatMoney(additionalPayment)} overtime
                         </div>
                       )}
+                      {settled && (
+                        <div className="mt-1">
+                          <button
+                            onClick={() => setEditingPaymentId(b.id)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-accent)" }}
+                          >
+                            Edit payment
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
@@ -267,5 +309,163 @@ export default function SettlementsScreen() {
           </table>
         ))}
     </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  border: "0.5px solid var(--border-strong)",
+  background: "var(--surface-2)",
+  color: "var(--text-primary)",
+};
+
+// Corrects a completed booking's recorded/overtime payment — the fix for
+// staff forgetting to log a payment (especially the overtime top-up) at
+// Mark-returned time. Expected payment itself never changes here; it stays
+// the fixed rate-formula basis. Each field can only be raised, and only up
+// to its own expected cap — recorded payment against recordedExpected,
+// overtime payment against overtimeExpected — never past it and never
+// below what's already recorded (see correctBookingPayment for the
+// floor half of that; the cap is enforced here since it needs the resolved
+// rate, which the repo layer doesn't have).
+function PaymentEditRow({
+  booking,
+  recordedExpected,
+  overtimeExpected,
+  overtimeHours,
+  onCancel,
+  onSaved,
+}: {
+  booking: Booking;
+  recordedExpected: number | null;
+  overtimeExpected: number | null;
+  overtimeHours: number;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const currentRecorded = booking.payment_amount ? Number(booking.payment_amount) : 0;
+  const currentOvertime = booking.additional_payment ? Number(booking.additional_payment) : 0;
+  const hasOvertime = overtimeHours > 0;
+
+  const [recordedPayment, setRecordedPayment] = useState(String(currentRecorded));
+  const [overtimePayment, setOvertimePayment] = useState(String(currentOvertime));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const recordedNum = Number(recordedPayment);
+  const overtimeNum = Number(overtimePayment);
+
+  const recordedValid =
+    recordedPayment.trim() !== "" &&
+    !Number.isNaN(recordedNum) &&
+    recordedNum >= currentRecorded &&
+    (recordedExpected == null || recordedNum <= recordedExpected);
+
+  const overtimeValid =
+    !hasOvertime ||
+    (overtimePayment.trim() !== "" &&
+      !Number.isNaN(overtimeNum) &&
+      overtimeNum >= currentOvertime &&
+      (overtimeExpected == null || overtimeNum <= overtimeExpected));
+
+  const canSave = recordedValid && overtimeValid;
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaveError(null);
+    setSaving(true);
+    try {
+      await correctBookingPayment(booking.id, {
+        payment_amount: String(recordedNum),
+        additional_payment: hasOvertime ? String(overtimeNum) : undefined,
+      });
+      onSaved();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td colSpan={COLUMNS.length} className="p-0" style={{ border: "0.5px solid var(--border)" }}>
+        <div className="space-y-3 p-4" style={{ background: "var(--surface-1)" }}>
+          {saveError && (
+            <div
+              className="flex items-start justify-between gap-4 rounded-md p-3 text-sm"
+              style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
+            >
+              <span>{saveError}</span>
+              <button onClick={() => setSaveError(null)} className="shrink-0 font-medium">
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+                Recorded payment (currently {formatMoney(currentRecorded)}
+                {recordedExpected != null ? `, capped at ${formatMoney(recordedExpected)}` : ""})
+              </label>
+              <input
+                type="number"
+                className="w-full rounded-md px-3 py-2.5 text-base"
+                style={inputStyle}
+                value={recordedPayment}
+                onChange={(e) => setRecordedPayment(e.target.value)}
+              />
+              {!recordedValid && recordedPayment.trim() !== "" && (
+                <p className="mt-1 text-sm" style={{ color: "var(--text-danger)" }}>
+                  Must be at least {formatMoney(currentRecorded)}
+                  {recordedExpected != null ? ` and at most ${formatMoney(recordedExpected)}` : ""}.
+                </p>
+              )}
+            </div>
+
+            {hasOvertime && (
+              <div>
+                <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+                  Overtime payment (currently {formatMoney(currentOvertime)}
+                  {overtimeExpected != null ? `, capped at ${formatMoney(overtimeExpected)}` : ""})
+                </label>
+                <input
+                  type="number"
+                  className="w-full rounded-md px-3 py-2.5 text-base"
+                  style={inputStyle}
+                  value={overtimePayment}
+                  onChange={(e) => setOvertimePayment(e.target.value)}
+                />
+                {!overtimeValid && overtimePayment.trim() !== "" && (
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-danger)" }}>
+                    Must be at least {formatMoney(currentOvertime)}
+                    {overtimeExpected != null ? ` and at most ${formatMoney(overtimeExpected)}` : ""}.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            Corrections can only raise what's recorded, up to the expected amount — expected payment itself
+            never changes. Use this to catch up a payment staff forgot to log at the time.
+          </p>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              disabled={saving || !canSave}
+              className="rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button onClick={onCancel} className="rounded-md px-4 py-2 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
   );
 }

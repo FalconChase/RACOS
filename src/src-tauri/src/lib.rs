@@ -130,6 +130,24 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0020_auto_mark_departed_setting.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 21,
+            description: "vehicle_local_details",
+            sql: include_str!("../migrations/0021_vehicle_local_details.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 22,
+            description: "vehicle_image_fit",
+            sql: include_str!("../migrations/0022_vehicle_image_fit.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 23,
+            description: "location_visibility_settings",
+            sql: include_str!("../migrations/0023_location_visibility_settings.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

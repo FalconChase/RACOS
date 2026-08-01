@@ -7,6 +7,10 @@ interface DatePickerProps {
   value: string; // "YYYY-MM-DD" or ""
   onChange: (value: string) => void;
   settings: AppSettings;
+  // Dates ("YYYY-MM-DD") to tint light-yellow in the grid — e.g. days that
+  // already have booking activity, so a range can be picked without having
+  // to guess or cross-reference another screen first.
+  highlightedDates?: Set<string>;
 }
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -29,7 +33,7 @@ function parseValue(value: string): { year: number; month: number; day: number }
 // Custom calendar popup instead of the native input[type=date] — gives a
 // consistent picker across platforms rather than whatever the OS webview
 // happens to render.
-export default function DatePicker({ value, onChange, settings }: DatePickerProps) {
+export default function DatePicker({ value, onChange, settings, highlightedDates }: DatePickerProps) {
   const [open, setOpen] = useState(false);
   const today = new Date();
   const parsed = parseValue(value);
@@ -112,19 +116,31 @@ export default function DatePicker({ value, onChange, settings }: DatePickerProp
                   parsed && parsed.year === viewYear && parsed.month === viewMonth && parsed.day === day;
                 const isToday =
                   today.getFullYear() === viewYear && today.getMonth() === viewMonth && today.getDate() === day;
+                const dateStr = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
+                const isHighlighted = highlightedDates?.has(dateStr) ?? false;
+
+                let cellStyle: React.CSSProperties;
+                if (isSelected) {
+                  cellStyle = { background: "var(--fill-primary)", color: "var(--on-primary)" };
+                } else {
+                  cellStyle = { color: "var(--text-primary)" };
+                  if (isHighlighted) {
+                    cellStyle.background = "var(--bg-warning)";
+                    cellStyle.color = "var(--text-warning)";
+                  }
+                  if (isToday) {
+                    cellStyle.border = "0.5px solid var(--text-accent)";
+                  }
+                }
+
                 return (
                   <button
                     type="button"
                     key={i}
                     onClick={() => selectDay(day)}
+                    title={isHighlighted ? "Has booking activity" : undefined}
                     className="rounded-md py-1.5"
-                    style={
-                      isSelected
-                        ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
-                        : isToday
-                        ? { border: "0.5px solid var(--text-accent)", color: "var(--text-primary)" }
-                        : { color: "var(--text-primary)" }
-                    }
+                    style={cellStyle}
                   >
                     {day}
                   </button>

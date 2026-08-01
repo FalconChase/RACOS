@@ -15,6 +15,8 @@ import {
   upsertCustomRate,
 } from "../lib/repo/rateMatrix";
 import { computeTier } from "../lib/pricing";
+import { useSettings } from "../lib/settingsContext";
+import { isProvinceVisible } from "../lib/islandGroups";
 import SearchableSelect from "../components/SearchableSelect";
 import type {
   BusinessProfile,
@@ -39,6 +41,7 @@ const TIER_LABELS: Record<Tier, string> = {
 };
 
 export default function RateMatrixScreen() {
+  const { settings } = useSettings();
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [bands, setBands] = useState<SeatingBand[]>([]);
@@ -80,8 +83,11 @@ export default function RateMatrixScreen() {
   }, []);
 
   const provinceOptions = useMemo(
-    () => provinces.map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
-    [provinces],
+    () =>
+      provinces
+        .filter((p) => p.id === newRateProvinceId || isProvinceVisible(p, settings))
+        .map((p) => ({ value: p.id, label: p.name, sublabel: p.region_name })),
+    [provinces, settings, newRateProvinceId],
   );
 
   const hqProvince = provinces.find((p) => p.id === profile?.hq_province_id);
@@ -153,6 +159,7 @@ export default function RateMatrixScreen() {
 
   const placeRows: PlaceRow[] = hqProvince
     ? provinces
+        .filter((p) => isProvinceVisible(p, settings))
         .map((p): PlaceRow => ({
           id: p.id,
           name: p.name,

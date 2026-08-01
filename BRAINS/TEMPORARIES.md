@@ -33,6 +33,10 @@
 | ROT013 | MED  | Tools tab + Car Activity — per-vehicle month timeline, overlap detection, viewport-fit grid, self-clamping tooltip | SES008 |
 | ROT014 | HIGH | Tools > Logs tab (owner/vehicle filters, sort modes, print) + lifecycle audit trail — action_logs widened, cancellation requires reason + departure snapshot, auto-mark-departed setting | SES009 |
 | ROT015 | HIGH | GPS pipeline (Stage 0+1 proven) — Traccar replacing DAGPS, vehicle_locations + gps_device_id on Supabase, gps-ingest Edge Function, full local pipeline tested with real GPS data | SES010 |
+| ROT016 | MED  | Map tab + Fleet remodel + Registry > Vehicles subtab + car-detail popup w/ Fill/Fit image | SES011 |
+| ROT017 | MED  | Remittances Recorded-split mode + Remittance period filter/boundary banner + calendar highlighting + toolbar fix | SES011 |
+| ROT018 | MED  | Settlements payment correction (additive-only, capped at expected, logged) | SES011 |
+| ROT019 | MED  | Settings > Locations island-group toggle + top-destination quick-pick chips | SES011 |
 
 ---
-# Lines: 38 / 100 — Budget remaining: 62
+# Lines: 42 / 100 — Budget remaining: 58

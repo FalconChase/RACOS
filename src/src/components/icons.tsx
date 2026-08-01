@@ -228,3 +228,12 @@ export function CameraIcon({ size = 18, strokeWidth = 2, className }: IconProps)
     </svg>
   );
 }
+
+export function MapIcon({ size = 18, strokeWidth = 2, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} strokeWidth={strokeWidth} className={className}>
+      <path d="M9 4.5 4 6.5v13l5-2 6 2 5-2v-13l-5 2-6-2Z" />
+      <path d="M9 4.5v13M15 6.5v13" />
+    </svg>
+  );
+}

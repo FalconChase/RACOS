@@ -1,7 +1,7 @@
 import { getDb, currentBusinessId } from "../db";
 import { queueOutbox } from "./outbox";
 import { diffField, logAction } from "./actionLog";
-import type { Vehicle, VehicleStatus } from "../types";
+import type { Vehicle, VehicleStatus, VehicleImageFit } from "../types";
 
 export async function listVehicles(): Promise<Vehicle[]> {
   const db = await getDb();
@@ -34,6 +34,13 @@ export interface NewVehicleInput {
   gps_device_id?: string;
   gps_provider?: string;
   gps_notes?: string;
+  // Local-only detail fields (Fleet car-detail popup) — not collected on the
+  // intake form, only ever set later via the Registry Vehicles edit form.
+  fuel?: string;
+  fuel_capacity?: string;
+  transmission?: string;
+  car_image?: string;
+  car_image_fit?: VehicleImageFit;
 }
 
 export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
@@ -61,6 +68,11 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
     gps_device_id: input.gps_device_id ?? null,
     gps_provider: input.gps_provider ?? null,
     gps_notes: input.gps_notes ?? null,
+    fuel: input.fuel ?? null,
+    fuel_capacity: input.fuel_capacity ?? null,
+    transmission: input.transmission ?? null,
+    car_image: input.car_image ?? null,
+    car_image_fit: input.car_image_fit ?? "cover",
     created_at: now,
     updated_at: now,
   };
@@ -68,8 +80,9 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
   await db.execute(
     `insert into vehicles
        (id, business_id, plate_number, make, model, year, status, daily_rate, seats, owner_id,
-        chassis_number, engine_number, gps_device_id, gps_provider, gps_notes, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        chassis_number, engine_number, gps_device_id, gps_provider, gps_notes,
+        fuel, fuel_capacity, transmission, car_image, car_image_fit, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       vehicle.id,
       vehicle.business_id,
@@ -86,6 +99,11 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
       vehicle.gps_device_id,
       vehicle.gps_provider,
       vehicle.gps_notes,
+      vehicle.fuel,
+      vehicle.fuel_capacity,
+      vehicle.transmission,
+      vehicle.car_image,
+      vehicle.car_image_fit,
       vehicle.created_at,
       vehicle.updated_at,
     ],
@@ -111,6 +129,11 @@ export interface UpdateVehicleInput {
   gps_device_id?: string | null;
   gps_provider?: string | null;
   gps_notes?: string | null;
+  fuel?: string | null;
+  fuel_capacity?: string | null;
+  transmission?: string | null;
+  car_image?: string | null;
+  car_image_fit?: VehicleImageFit;
 }
 
 const VEHICLE_FIELD_LABELS: Record<keyof UpdateVehicleInput, string> = {
@@ -125,6 +148,11 @@ const VEHICLE_FIELD_LABELS: Record<keyof UpdateVehicleInput, string> = {
   gps_device_id: "GPS device ID",
   gps_provider: "GPS provider",
   gps_notes: "GPS notes",
+  fuel: "Fuel",
+  fuel_capacity: "Fuel capacity",
+  transmission: "Transmission",
+  car_image: "Car image",
+  car_image_fit: "Car image fit",
 };
 
 export async function updateVehicle(id: string, patch: UpdateVehicleInput): Promise<Vehicle> {
@@ -139,6 +167,15 @@ export async function updateVehicle(id: string, patch: UpdateVehicleInput): Prom
     .map((field) => {
       const oldValue = current[field];
       const newValue = patch[field];
+      // car_image holds a base64 data URL — logging its actual value would
+      // dump a huge blob into action_logs, so it only ever gets a plain
+      // "(image) -> (image)" marker recording that it changed, never the
+      // real contents.
+      if (field === "car_image") {
+        return oldValue === newValue
+          ? null
+          : diffField(field, VEHICLE_FIELD_LABELS[field], oldValue ? "(image)" : null, newValue ? "(image)" : null);
+      }
       return diffField(
         field,
         VEHICLE_FIELD_LABELS[field],
@@ -152,6 +189,7 @@ export async function updateVehicle(id: string, patch: UpdateVehicleInput): Prom
     `update vehicles
         set plate_number = ?, make = ?, model = ?, year = ?, seats = ?, owner_id = ?,
             chassis_number = ?, engine_number = ?, gps_device_id = ?, gps_provider = ?, gps_notes = ?,
+            fuel = ?, fuel_capacity = ?, transmission = ?, car_image = ?, car_image_fit = ?,
             updated_at = ?
       where id = ?`,
     [
@@ -166,6 +204,11 @@ export async function updateVehicle(id: string, patch: UpdateVehicleInput): Prom
       next.gps_device_id,
       next.gps_provider,
       next.gps_notes,
+      next.fuel,
+      next.fuel_capacity,
+      next.transmission,
+      next.car_image,
+      next.car_image_fit,
       next.updated_at,
       id,
     ],
