@@ -19,6 +19,7 @@ import { getDb, currentBusinessId } from "../db";
 import { supabase } from "../supabaseClient";
 import type Database from "@tauri-apps/plugin-sql";
 import { queueOutbox, type OutboxTable, type OutboxOp } from "./outbox";
+import { isConnectivityError } from "../network";
 
 interface OutboxRow {
   id: number;
@@ -186,9 +187,25 @@ async function pushOne(db: Database, row: OutboxRow): Promise<void> {
     await ensureOwnerMirrored(db, cloudRow.owner_id as string);
   }
 
-  const { error } = await supabase.from(row.entity_table).upsert(cloudRow, { onConflict: "id" });
+  const { error } = await supabase.from(row.entity_table).upsert(cloudRow, { onConflict: CONFLICT_KEY[row.entity_table] });
   if (error) throw new Error(error.message);
 }
+
+// Every synced table's Cloud primary key is "id" except
+// gps_location_labels, which is keyed by the entry it resolves (a
+// re-resolve should overwrite in place, not create a second row — see
+// 20260810250000_gps_location_labels.sql).
+const CONFLICT_KEY: Record<OutboxTable, string> = {
+  vehicles: "id",
+  customers: "id",
+  bookings: "id",
+  payments: "id",
+  owners: "id",
+  odometer_readings: "id",
+  gps_location_entries: "id",
+  mileage_entries: "id",
+  gps_location_labels: "entry_id",
+};
 
 async function ensureOwnerMirrored(db: Database, ownerId: string): Promise<void> {
   const rows = await db.select<{ id: string; business_id: string; full_name: string }[]>(
@@ -296,6 +313,63 @@ async function mapToCloudShape(
 
     case "payments":
       return local;
+
+    // ROP011 — append-only, so this is the only shape either table's rows
+    // ever have; there's no update case to worry about diverging from this.
+    case "odometer_readings":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        vehicle_id: local.vehicle_id,
+        reading_km: local.reading_km,
+        reading_at: local.reading_at,
+        recorded_at: local.recorded_at,
+        recorded_by_role: local.recorded_by_role,
+        recorded_by_id: local.recorded_by_id,
+        recorded_by_label: local.recorded_by_label,
+        note: local.note,
+      };
+
+    case "gps_location_entries":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        vehicle_id: local.vehicle_id,
+        location_text: local.location_text,
+        latitude: local.latitude,
+        longitude: local.longitude,
+        duration_minutes: local.duration_minutes,
+        reading_at: local.reading_at,
+        recorded_at: local.recorded_at,
+        recorded_by_role: local.recorded_by_role,
+        recorded_by_id: local.recorded_by_id,
+        recorded_by_label: local.recorded_by_label,
+        note: local.note,
+      };
+
+    case "mileage_entries":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        vehicle_id: local.vehicle_id,
+        mileage_km: local.mileage_km,
+        period_start: local.period_start,
+        period_end: local.period_end,
+        recorded_at: local.recorded_at,
+        recorded_by_role: local.recorded_by_role,
+        recorded_by_id: local.recorded_by_id,
+        recorded_by_label: local.recorded_by_label,
+        note: local.note,
+      };
+
+    case "gps_location_labels":
+      return {
+        entry_id: local.entry_id,
+        business_id: local.business_id,
+        formatted_address: local.formatted_address,
+        raw_response: local.raw_response ? JSON.parse(local.raw_response as string) : null,
+        resolved_at: local.resolved_at,
+      };
   }
 }
 
@@ -349,8 +423,3 @@ async function markOffline(db: Database): Promise<void> {
   );
 }
 
-function isConnectivityError(err: unknown): boolean {
-  if (err instanceof TypeError) return true; // fetch() throws TypeError when the network is unreachable
-  const message = err instanceof Error ? err.message : String(err);
-  return /fetch|network|ENOTFOUND|ECONNREFUSED|timed? ?out/i.test(message);
-}

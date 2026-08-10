@@ -1,8 +1,9 @@
 import { useState } from "react";
 import CarActivity from "./CarActivity";
 import LogsScreen from "./LogsScreen";
+import EntriesScreen from "./EntriesScreen";
 
-type Subtab = "carActivity" | "logs";
+type Subtab = "carActivity" | "logs" | "entries";
 
 // Rendered as a real subtab bar (same pattern as Rentals' Ongoing/History
 // and Settlements' Records/Remittances) so further tools can land later
@@ -17,6 +18,7 @@ export default function ToolsScreen() {
           [
             { id: "carActivity", label: "Car Activity" },
             { id: "logs", label: "Logs" },
+            { id: "entries", label: "Entries" },
           ] as { id: Subtab; label: string }[]
         ).map((t) => (
           <button
@@ -36,6 +38,7 @@ export default function ToolsScreen() {
 
       {subtab === "carActivity" && <CarActivity />}
       {subtab === "logs" && <LogsScreen />}
+      {subtab === "entries" && <EntriesScreen />}
     </div>
   );
 }

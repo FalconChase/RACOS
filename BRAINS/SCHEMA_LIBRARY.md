@@ -2,7 +2,7 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-10 (SES015), cross-checked directly against the live Supabase schema and all local migration files through 0026.
+Last compiled: 2026-08-10 (SES016), cross-checked directly against the live Supabase schema and all local migration files through 0032.
 
 ---
 
@@ -215,10 +215,62 @@ Reads **action_logs** (full shape above) joined with **bookings** for the bookin
 
 ---
 
+## Tools — Entries (ROP011, SES016)
+
+A software-side tamper-defense layer alongside GPS (Traccar): odometer readings and manual GPS logging as corroborating signals, submitted independently by staff (admin app, Tools > Entries) and/or the vehicle's owner (Owners' Portal — the portal's first-ever write access, exception to ROD005). The three log tables below are immutable by RLS omission (select+insert policies only, no update/delete anywhere) and share a two-timestamp variance pattern: `reading_at`/period (claimed time, DB-checked to never be future-dated) vs `recorded_at` (system time) — `computeVariance()`/`computeDateVariance()` in `lib/variance.ts` (duplicated in `portal/src/lib/variance.ts`, no shared package between the two apps).
+
+**odometer_readings** (Local + Cloud, same shape).
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid/text PK | |
+| business_id, vehicle_id | FK | |
+| reading_km | integer | >= 0 |
+| reading_at | timestamptz | claimed observation time; check `reading_at <= recorded_at` |
+| recorded_at | timestamptz | system time, default now() |
+| recorded_by_role | text | `staff` \| `owner` |
+| recorded_by_id, recorded_by_label | uuid/text, text | label is a name snapshot at write time |
+| note | text \| null | |
+
+**gps_location_entries** (Local + Cloud) — point-in-time "vehicle was here."
+| Column | Type | Notes |
+|---|---|---|
+| id, business_id, vehicle_id | | |
+| location_text | text, required | free text, or a `"lat, lng"` string when written by Record through MAP |
+| latitude, longitude | double precision \| null | set together or not at all (paired CHECK); populated by Record through MAP, null for plain manual entries |
+| duration_minutes | integer \| null | optional "parked for" |
+| reading_at, recorded_at, recorded_by_role/id/label, note | same shape as odometer_readings | |
+
+**mileage_entries** (Local + Cloud) — a period-based figure (hand-copied from Traccar for now, no automatic ingestion yet).
+| Column | Type | Notes |
+|---|---|---|
+| id, business_id, vehicle_id | | |
+| mileage_km | integer | >= 0 |
+| period_start, period_end | date | daily by default (equal dates), rangeable per row; check `period_end >= period_start` and `period_end <= recorded_at::date` |
+| recorded_at, recorded_by_role/id/label, note | same shape | |
+
+**gps_location_labels** (Local + Cloud) — reverse-geocoded ("Convert to location") display cache, deliberately NOT append-only.
+| Column | Type | Notes |
+|---|---|---|
+| entry_id | uuid/text PK, FK → gps_location_entries | 1:1, on delete cascade |
+| business_id | FK | |
+| formatted_address | text | Nominatim's `display_name` — a friendly label only, not matched into the provinces/municipalities PSGC tables |
+| raw_response | jsonb \| null | full Nominatim response, kept for reference |
+| resolved_at | timestamptz | re-resolving overwrites in place (`on conflict(entry_id) do update`) |
+
+**RLS** (odometer_readings/gps_location_entries/mileage_entries, identical shape on all three): staff select+insert scoped to `business_id = current_business_id()`, `recorded_by_role='staff'`, `recorded_by_id = auth.uid()`; owner select+insert scoped to `business_id = current_owner_business_id()` and `vehicle_id in (select id from vehicles where owner_id = current_owner_id())`, `recorded_by_role='owner'`. No update/delete policy exists on any of these three — that omission, not app code, is what makes a saved entry immutable. `gps_location_labels` is the one exception: staff get full CRUD (`for all`), since it's a display cache, not an audit record; owners get select-only via the same vehicle-ownership join.
+
+**Odometer Log tab** — form + list per vehicle; every save (all three log types, all screens) goes through a `ConfirmDialog` before it's written.
+**GPS Log tab** — Locations and Mileage sub-subtabs. Locations has a manual form plus **Record through MAP** (Leaflet click-to-drop numbered pins, held only as an in-memory draft until one Finalize batch-submits — `createGpsLocationEntriesBatch()` in `gpsLocationEntries.ts`, sequential single-row inserts since there's no real DB transaction available, partial-failure-aware) and **Convert to location** (on-demand Nominatim reverse geocode, admin-only, requires connectivity — `isConnectivityError()` in `lib/network.ts` gives a clear offline message instead of a raw fetch error). Clicking a coordinate in either the saved-entries list or a draft trail opens **MiniMapModal** (`components/MiniMapModal.tsx`) — an in-place map popup, not a tab jump, so the current screen/filters/scroll position aren't disturbed.
+**Reports tab** — per-vehicle stats, a mileage cross-check (`buildSegments()` in `EntriesReportsTab.tsx`: flags "Odometer decreased" or a mismatch beyond `max(30km, 20%)` between the odometer delta and any overlapping `mileage_entries`), and a combined odometer/location/mileage timeline showing each entry's variance; location rows with coordinates are also clickable into MiniMapModal.
+
+Owners' Portal (`portal/src/components/EntriesTab.tsx`) mirrors Odometer Log / GPS Log (Locations + Mileage) with the same ConfirmDialog-before-save pattern — no Record through MAP, Convert to location, lat/lng exposure, or map view on that side (admin-only, ROD023).
+
+---
+
 ## Map
 
-**vehicles** — dropdown of vehicles (no pins rendered yet — see below).
-**vehicle_locations** (**Cloud only** — not read by the desktop app's UI yet, despite existing and being populated by the GPS pipeline):
+**vehicles** — dropdown, defaults to "All Vehicles" (no live pins — see `vehicle_locations` below).
+**vehicle_locations** (**Cloud only** — not read by the desktop app's UI yet, despite existing and being populated by the live GPS pipeline):
 | Column | Type | Notes |
 |---|---|---|
 | id | uuid PK | |
@@ -231,6 +283,8 @@ Reads **action_logs** (full shape above) joined with **bookings** for the bookin
 | raw | jsonb \| null | catch-all for unnormalized fields |
 | created_at | timestamptz | |
 RLS: select-only via `business_id = current_business_id()` — no insert/update/delete for authenticated users; only the `gps-ingest` Edge Function (service key) writes here.
+
+**gps_location_entries + gps_location_labels** (ROP011, SES016) — selecting one specific vehicle plots that vehicle's logged location history (see Tools > Entries above) as a numbered trail: markers + connecting polyline, sorted chronologically, popup per pin (time/location/logged by/parked duration), optional From/To date filter (defaults to full history). This is the manual/self-reported signal, entirely separate from `vehicle_locations`' live GPS feed above — the two aren't cross-referenced against each other yet.
 
 ---
 
@@ -281,6 +335,7 @@ All tables RLS-enabled, scoped by `business_id = current_business_id()` except w
 **payments**: id, business_id, booking_id, amount, method, status, paid_at, created_at. *(See "Dormant tables" below.)*
 **vehicle_locations**: see Map section above.
 **owners**: id, business_id, full_name, login_code (unique), created_at, updated_at — see Registry > Owners section above for full detail. A bare `{id, business_id, full_name}` row is now also auto-created by the sync worker (SES015) the first time it needs to push a vehicle with an `owner_id`, if login-code generation hasn't created one already — never touches `login_code`.
+**odometer_readings / gps_location_entries / mileage_entries / gps_location_labels** (ROP011, SES016): see Tools > Entries section above for full column/RLS detail — append-only via RLS omission (no update/delete policy on the first three), `gps_location_entries` carries nullable paired `latitude`/`longitude`, `gps_location_labels` is the one upsertable (non-append-only) table in the set.
 
 **Owner JWT claim helpers (SES015, ROP009 migration)**: `current_owner_id()` / `current_owner_business_id()` — plain SQL functions reading `auth.jwt() ->> 'owner_id'` / `'business_id'` (the custom claims `owner-login` mints, ROD020), fixed `search_path`, granted to `authenticated` only. Mirror `current_business_id()`'s role but for owner sessions, which have no `profiles` row to resolve through.
 
@@ -288,6 +343,7 @@ All tables RLS-enabled, scoped by `business_id = current_business_id()` except w
 - `owner_read_own_vehicles` on `vehicles`, select-only: `owner_id = current_owner_id() and business_id = current_owner_business_id()`.
 - `owner_read_own_bookings` on `bookings`, select-only: `business_id = current_owner_business_id() and vehicle_id in (select id from vehicles where owner_id = current_owner_id())`.
 - No policy on `customers` — the Owners' Portal never reads renter identity (privacy default, not yet a formal RACOS.md decision).
+- (ROP011, SES016) `*_owner_select` + `*_owner_insert` on `odometer_readings`/`gps_location_entries`/`mileage_entries`, and `gps_location_labels_owner_select` — the portal's first-ever WRITE grant, not just read (see Tools > Entries above); all still gated through the same `vehicle_id in (select id from vehicles where owner_id = current_owner_id())` ownership join.
 
 ---
 
@@ -298,6 +354,7 @@ Next.js app at `/RACOS/portal`. `lib/ownerData.ts` is the one place that queries
 - **Vehicle status tab** — `vehicles` (plate/make/model/year/seats/status), owner-scoped by RLS.
 - **Activity log tab** — `bookings` joined to `vehicles(plate_number, make, model)`, ordered by `start_date desc`. Shows dates/destination/purpose/status only, never the customer.
 - **Financials tab** — same `bookings` rows, summed client-side (`summarizeFinancials()`): `payment_amount + additional_payment` = Collected, `expected_payment` = Expected, both overall and per-vehicle. Cancelled bookings excluded from sums.
+- **Entries tab** (ROP011, SES016) — the portal's first-ever write access (exception to ROD005): Odometer Log and GPS Log (Locations + Mileage) sub-subtabs, same tables/RLS/ConfirmDialog pattern as the admin side's Tools > Entries — see that section above for full column/RLS detail. `lib/ownerData.ts` gained `fetchOwnerOdometerReadings`/`fetchOwnerGpsLocationEntries`/`fetchOwnerMileageEntries` + matching `createOwner*` writers, all via `createOwnerClient(token)`.
 
 ---
 
@@ -355,3 +412,12 @@ isReturningToday  = status == "active"  AND not overdue AND same_day(end_date, n
 **One-time backfill (migration 0027, `sync_state.backfilled_at`)**: the outbox only ever gained entries going forward from ROT003 — any local vehicles/customers/owners/bookings row created or last touched before the sync worker existed has no outbox history, so it would otherwise never be pushed. `ensureBackfilled()` runs at the start of every drain, per business, exactly once: queues an `insert` for every local row in those four tables with no existing outbox entry for its id, then sets `backfilled_at` so it never rescans.
 
 **Booking reference**: `RNT-` + first 8 chars of the booking's uuid, uppercased. Computed on the fly everywhere it's shown, never stored.
+
+**Entries variance (ROP011, SES016)** — `lib/variance.ts`:
+```
+computeVariance(reading_at, recorded_at)     // minute-granularity — odometer_readings, gps_location_entries
+computeDateVariance(period_end, recorded_at) // day-granularity — mileage_entries (period-based, not a timestamp)
+```
+Both return a tone (`live` ~0 gap / `late` negative gap / `future`, DB-blocked but defensively handled) + a label ("Logged same day", "Logged Nd late", etc.) — never blocks a save, just surfaces the gap as visible signal.
+
+**Mileage cross-check (ROP011, SES016, `EntriesReportsTab.buildSegments()`)**: for each consecutive pair of odometer readings on a vehicle, `odometerDeltaKm = toReading.reading_km - fromReading.reading_km`, compared against the sum of any `mileage_entries` whose period overlaps that window. Flagged "Odometer decreased" if the delta is negative; flagged "Mismatch" if `abs(odometerDeltaKm - mileageSum) > max(30, odometerDeltaKm * 0.2)` — whichever is larger of a flat 30km floor or 20% of the delta, since a fixed gap means very different things on a short trip vs. a long one.

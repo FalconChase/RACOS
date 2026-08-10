@@ -276,6 +276,88 @@ export interface Municipality {
   name: string;
 }
 
+// --- ROP011: odometer + manual GPS logs -----------------------------------
+// Both tables are append-only — no update/delete anywhere in the app or the
+// RLS layer (see supabase/migrations/20260810210000_odometer_gps_manual_entries.sql).
+// Either staff or the vehicle's owner can log an entry, independently of the
+// other; reading_at is the claimed observation time (staff/owner-picked,
+// can't be in the future), recorded_at is the system-generated insert time —
+// the gap between them is itself signal (see lib/variance.ts).
+
+export type RecordedByRole = "staff" | "owner";
+
+export interface OdometerReading {
+  id: string;
+  business_id: string;
+  vehicle_id: string;
+  reading_km: number;
+  reading_at: string;
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_id: string;
+  recorded_by_label: string;
+  note: string | null;
+}
+
+// A self-reported "vehicle was here at this time" pin — point-in-time, same
+// reading_at/recorded_at lock rule as OdometerReading.
+export interface GpsLocationEntry {
+  id: string;
+  business_id: string;
+  vehicle_id: string;
+  location_text: string;
+  // Real structured coordinates, kept separate from location_text so a
+  // future location-processing feature has clean numeric data to work
+  // with. Null for manually typed entries; both set together (never one
+  // without the other) for entries recorded through the map trail tool.
+  latitude: number | null;
+  longitude: number | null;
+  duration_minutes: number | null;
+  reading_at: string;
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_id: string;
+  recorded_by_label: string;
+  note: string | null;
+}
+
+// "Convert to location" — a reverse-geocoded (Nominatim) display label for
+// a GpsLocationEntry that has coordinates. A 1:1 cache keyed by the entry
+// it resolves, not another append-only log: gps_location_entries itself
+// stays untouched (nothing is ever written back onto it), but this row can
+// be re-resolved/overwritten since it's a display convenience, not an
+// audit record. Deliberately just a formatted string — not an attempt to
+// match into the provinces/municipalities PSGC tables (different naming
+// conventions, real fuzzy-matching problem, out of scope for now).
+export interface GpsLocationLabel {
+  entry_id: string;
+  business_id: string;
+  formatted_address: string;
+  raw_response: unknown | null;
+  resolved_at: string;
+}
+
+// A mileage figure (hand-copied from Traccar for now — real API auto-sync
+// is a later ROT) covering a period rather than an instant. Daily by
+// default at the form level (period_start === period_end) but any row can
+// span a wider range. period_end can never be later than the date it was
+// recorded on — same "can't claim the future" rule as everything else here,
+// just at day granularity instead of minute granularity (see
+// lib/variance.ts computeDateVariance).
+export interface MileageEntry {
+  id: string;
+  business_id: string;
+  vehicle_id: string;
+  mileage_km: number;
+  period_start: string; // YYYY-MM-DD
+  period_end: string; // YYYY-MM-DD
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_id: string;
+  recorded_by_label: string;
+  note: string | null;
+}
+
 // A specific municipality's rate, overriding the standard tier-based
 // RateMatrixRow whenever that exact municipality is selected as a booking's
 // destination. One row per (municipality, seating band) combination.

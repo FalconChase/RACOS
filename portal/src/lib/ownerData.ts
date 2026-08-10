@@ -77,6 +77,178 @@ export async function fetchOwnerBookings(token: string, limit = 200): Promise<Ow
   }));
 }
 
+// --- ROP011: odometer + manual GPS logs ------------------------------------
+// The portal's first write access (ROD005 was read-only everywhere) —
+// scoped to just these two tables (see the odometer_readings_owner_insert /
+// gps_manual_entries_owner_insert policies in the migration). Both fetch
+// functions return every entry for this owner's vehicles — the owner's own
+// entries and any staff logged too — since the comparison (owner vs staff,
+// falling back to owner vs the booking record) is the whole point; entries
+// are append-only, no update/delete function exists here either.
+
+export type RecordedByRole = "staff" | "owner";
+
+export interface OwnerOdometerReading {
+  id: string;
+  vehicle_id: string;
+  reading_km: number;
+  reading_at: string;
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_label: string;
+  note: string | null;
+  vehicle: { plate_number: string } | null;
+}
+
+export interface OwnerGpsLocationEntry {
+  id: string;
+  vehicle_id: string;
+  location_text: string;
+  duration_minutes: number | null;
+  reading_at: string;
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_label: string;
+  note: string | null;
+  vehicle: { plate_number: string } | null;
+}
+
+export interface OwnerMileageEntry {
+  id: string;
+  vehicle_id: string;
+  mileage_km: number;
+  period_start: string;
+  period_end: string;
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_label: string;
+  note: string | null;
+  vehicle: { plate_number: string } | null;
+}
+
+function normalizeVehicle<T extends { vehicle: unknown }>(row: T): T {
+  const v = row.vehicle;
+  return { ...row, vehicle: Array.isArray(v) ? (v[0] ?? null) : v };
+}
+
+export async function fetchOwnerOdometerReadings(token: string): Promise<OwnerOdometerReading[]> {
+  const client = createOwnerClient(token);
+  const { data, error } = await client
+    .from("odometer_readings")
+    .select(
+      "id, vehicle_id, reading_km, reading_at, recorded_at, recorded_by_role, recorded_by_label, note, vehicle:vehicles(plate_number)",
+    )
+    .order("reading_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as unknown as OwnerOdometerReading[]).map(normalizeVehicle);
+}
+
+export async function fetchOwnerGpsLocationEntries(token: string): Promise<OwnerGpsLocationEntry[]> {
+  const client = createOwnerClient(token);
+  const { data, error } = await client
+    .from("gps_location_entries")
+    .select(
+      "id, vehicle_id, location_text, duration_minutes, reading_at, recorded_at, recorded_by_role, recorded_by_label, note, vehicle:vehicles(plate_number)",
+    )
+    .order("reading_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as unknown as OwnerGpsLocationEntry[]).map(normalizeVehicle);
+}
+
+export async function fetchOwnerMileageEntries(token: string): Promise<OwnerMileageEntry[]> {
+  const client = createOwnerClient(token);
+  const { data, error } = await client
+    .from("mileage_entries")
+    .select(
+      "id, vehicle_id, mileage_km, period_start, period_end, recorded_at, recorded_by_role, recorded_by_label, note, vehicle:vehicles(plate_number)",
+    )
+    .order("period_end", { ascending: false });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as unknown as OwnerMileageEntry[]).map(normalizeVehicle);
+}
+
+export interface NewOwnerOdometerReadingInput {
+  vehicle_id: string;
+  reading_km: number;
+  reading_at: string; // ISO, validated by the caller not to be in the future
+  note?: string;
+}
+
+export async function createOwnerOdometerReading(
+  token: string,
+  owner: { id: string; business_id: string; full_name: string },
+  input: NewOwnerOdometerReadingInput,
+): Promise<void> {
+  const client = createOwnerClient(token);
+  const { error } = await client.from("odometer_readings").insert({
+    business_id: owner.business_id,
+    vehicle_id: input.vehicle_id,
+    reading_km: input.reading_km,
+    reading_at: input.reading_at,
+    recorded_by_role: "owner",
+    recorded_by_id: owner.id,
+    recorded_by_label: owner.full_name,
+    note: input.note ?? null,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export interface NewOwnerGpsLocationEntryInput {
+  vehicle_id: string;
+  location_text: string;
+  duration_minutes?: number;
+  reading_at: string;
+  note?: string;
+}
+
+export async function createOwnerGpsLocationEntry(
+  token: string,
+  owner: { id: string; business_id: string; full_name: string },
+  input: NewOwnerGpsLocationEntryInput,
+): Promise<void> {
+  const client = createOwnerClient(token);
+  const { error } = await client.from("gps_location_entries").insert({
+    business_id: owner.business_id,
+    vehicle_id: input.vehicle_id,
+    location_text: input.location_text,
+    duration_minutes: input.duration_minutes ?? null,
+    reading_at: input.reading_at,
+    recorded_by_role: "owner",
+    recorded_by_id: owner.id,
+    recorded_by_label: owner.full_name,
+    note: input.note ?? null,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export interface NewOwnerMileageEntryInput {
+  vehicle_id: string;
+  mileage_km: number;
+  period_start: string;
+  period_end: string;
+  note?: string;
+}
+
+export async function createOwnerMileageEntry(
+  token: string,
+  owner: { id: string; business_id: string; full_name: string },
+  input: NewOwnerMileageEntryInput,
+): Promise<void> {
+  const client = createOwnerClient(token);
+  const { error } = await client.from("mileage_entries").insert({
+    business_id: owner.business_id,
+    vehicle_id: input.vehicle_id,
+    mileage_km: input.mileage_km,
+    period_start: input.period_start,
+    period_end: input.period_end,
+    recorded_by_role: "owner",
+    recorded_by_id: owner.id,
+    recorded_by_label: owner.full_name,
+    note: input.note ?? null,
+  });
+  if (error) throw new Error(error.message);
+}
+
 export function money(value: string | null): number {
   if (!value) return 0;
   const n = Number(value);

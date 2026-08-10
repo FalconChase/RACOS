@@ -178,6 +178,30 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0028_action_log_system_reset.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 29,
+            description: "odometer_gps_manual_entries",
+            sql: include_str!("../migrations/0029_odometer_gps_manual_entries.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 30,
+            description: "split_gps_locations_and_mileage",
+            sql: include_str!("../migrations/0030_split_gps_locations_and_mileage.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 31,
+            description: "gps_location_entries_coordinates",
+            sql: include_str!("../migrations/0031_gps_location_entries_coordinates.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 32,
+            description: "gps_location_labels",
+            sql: include_str!("../migrations/0032_gps_location_labels.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

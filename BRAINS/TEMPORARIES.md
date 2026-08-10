@@ -44,6 +44,7 @@
 | ROT024 | HIGH | Outbound sync worker (ROP009, promoted from PLANS.md) — outbox drain to Supabase, idempotent upserts, connectivity-aware sync_state tracking; Cloud vehicles/bookings widened (seats/owner_id/chassis/engine_number; destination_label/purpose/payment fields/actual timestamps); owner JWT-claim RLS added | SES015 |
 | ROT020 | HIGH | Owners' Portal real data screens — Vehicle status, Activity log, Financials, reading owner-scoped Supabase data (owner RLS) via createOwnerClient | SES015 |
 | ROT025 | MED  | Factory reset AND Reset test data both removed (bulk-wiping a business's own history undermines transparency, even local-only/logged); action_logs widened for 'system'/'reset' (migration 0028) so the remaining bulk tool, Clear stale test data (cross-business rows only), is always logged (ROD021) | SES015 |
+| ROT026-030 | HIGH | ROP011 — odometer_readings/gps_location_entries/mileage_entries (append-only via RLS omission, variance tracking); Tools > Entries (Odometer Log/GPS Log/Reports) desktop; Owners' Portal Entries tab (first write access); Record through MAP trail recorder; Convert to location (Nominatim, gps_location_labels cache); Map tab per-vehicle logged-history trail + MiniMapModal | SES016 |
 
 ---
-# Lines: 49 / 100 — Budget remaining: 51
+# Lines: 50 / 100 — Budget remaining: 50

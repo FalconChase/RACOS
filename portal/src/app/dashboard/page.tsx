@@ -7,13 +7,15 @@ import { fetchOwnerVehicles, fetchOwnerBookings, type OwnerVehicle, type OwnerBo
 import VehicleStatusTab from "@/components/VehicleStatusTab";
 import ActivityLogTab from "@/components/ActivityLogTab";
 import FinancialsTab from "@/components/FinancialsTab";
+import EntriesTab from "@/components/EntriesTab";
 
-type Tab = "vehicles" | "activity" | "financials";
+type Tab = "vehicles" | "activity" | "financials" | "entries";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "vehicles", label: "Vehicle status" },
   { id: "activity", label: "Activity log" },
   { id: "financials", label: "Financials" },
+  { id: "entries", label: "Entries" },
 ];
 
 type DataState =
@@ -114,6 +116,7 @@ export default function DashboardPage() {
             {tab === "vehicles" && <VehicleStatusTab vehicles={data.vehicles} />}
             {tab === "activity" && <ActivityLogTab bookings={data.bookings} />}
             {tab === "financials" && <FinancialsTab bookings={data.bookings} />}
+            {tab === "entries" && <EntriesTab session={session} vehicles={data.vehicles} />}
           </>
         )}
       </main>
