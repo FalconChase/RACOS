@@ -68,6 +68,11 @@ export interface Owner {
   address_line: string | null;
   // Optional at intake, editable later.
   contact_number: string | null;
+  // Owners' Portal login credential (ROD018) — permanent 8-char code, null
+  // until staff explicitly click "Generate login code" (Registry > Owners).
+  // Generating one is what creates this owner's row on Supabase; there's no
+  // separate sync step. Read-only in the app once set — never editable.
+  login_code: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -246,6 +251,7 @@ export interface BusinessProfile {
   business_id: string;
   hq_province_id: string | null;
   hq_city_id: string | null;
+  contact_number: string | null;
   updated_at: string;
 }
 

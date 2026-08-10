@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/settingsContext";
 import { APP_VERSION } from "../lib/version";
-import { getBusinessProfile, listMunicipalities, listProvinces, setHqCity, setHqProvince } from "../lib/repo/locations";
+import { getBusinessProfile, listMunicipalities, listProvinces, setBusinessContactNumber, setHqCity, setHqProvince } from "../lib/repo/locations";
 import { getCurrentBusinessName, setCurrentBusinessName } from "../lib/db";
 import { resetAllBookings } from "../lib/repo/bookings";
 import { factoryReset } from "../lib/repo/factoryReset";
 import { listActionLogs } from "../lib/repo/actionLog";
 import { formatDateTime } from "../lib/dateFormat";
 import { isProvinceVisible } from "../lib/islandGroups";
+import { signOut } from "../lib/auth";
+import { supabase } from "../lib/supabaseClient";
 import SearchableSelect from "../components/SearchableSelect";
 import ConfirmDialog from "../components/ConfirmDialog";
 import type { ActionLogEntry, BusinessProfile, DateFormat, DurationDisplay, Municipality, Province, TimeFormat } from "../lib/types";
@@ -26,13 +28,19 @@ function BusinessName() {
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    getCurrentBusinessName().then((name) => {
-      setSaved(name);
-      setDraft(name ?? "");
-      setLoading(false);
-    });
+    getCurrentBusinessName()
+      .then((name) => {
+        setSaved(name);
+        setDraft(name ?? "");
+        setLoading(false);
+      })
+      .catch((err) => {
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
   }, []);
 
   const dirty = draft.trim() !== "" && draft.trim() !== (saved ?? "");
@@ -46,6 +54,9 @@ function BusinessName() {
     setBusy(false);
   }
 
+  if (loadError) {
+    return <p className="text-base" style={{ color: "var(--text-danger)" }}>Couldn't load: {loadError}</p>;
+  }
   if (loading) {
     return <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>;
   }
@@ -86,6 +97,7 @@ function BusinessHeadquarters() {
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Editing is off by default once HQ is set — it's meant to be a one-time
   // setup step, not a routine setting. The "Change" link re-opens the form,
   // which is deliberately kept available (rather than hard-locked) so the
@@ -97,14 +109,19 @@ function BusinessHeadquarters() {
 
   async function refresh() {
     setLoading(true);
-    const [prof, p, m] = await Promise.all([getBusinessProfile(), listProvinces(), listMunicipalities()]);
-    setProfile(prof);
-    setProvinces(p);
-    setMunicipalities(m);
-    setDraftProvinceId(prof?.hq_province_id ?? "");
-    setDraftCityId(prof?.hq_city_id ?? "");
-    setEditing(!prof?.hq_province_id);
-    setLoading(false);
+    try {
+      const [prof, p, m] = await Promise.all([getBusinessProfile(), listProvinces(), listMunicipalities()]);
+      setProfile(prof);
+      setProvinces(p);
+      setMunicipalities(m);
+      setDraftProvinceId(prof?.hq_province_id ?? "");
+      setDraftCityId(prof?.hq_city_id ?? "");
+      setEditing(!prof?.hq_province_id);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -144,6 +161,9 @@ function BusinessHeadquarters() {
     setEditing(true);
   }
 
+  if (loadError) {
+    return <p className="text-base" style={{ color: "var(--text-danger)" }}>Couldn't load: {loadError}</p>;
+  }
   if (loading) {
     return <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>;
   }
@@ -218,6 +238,76 @@ function BusinessHeadquarters() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// Optional, editable any time (unlike HQ province/city above, which is meant
+// to be a one-time setup step) — shown on the Home header once set, blank by
+// default so it never blocks getting started.
+function BusinessContactNumber() {
+  const [saved, setSaved] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getBusinessProfile()
+      .then((profile) => {
+        setSaved(profile?.contact_number ?? null);
+        setDraft(profile?.contact_number ?? "");
+        setLoading(false);
+      })
+      .catch((err) => {
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+  }, []);
+
+  const dirty = draft.trim() !== (saved ?? "");
+
+  async function handleSave() {
+    setBusy(true);
+    const next = draft.trim() || null;
+    await setBusinessContactNumber(next);
+    setSaved(next);
+    setBusy(false);
+  }
+
+  if (loadError) {
+    return <p className="text-base" style={{ color: "var(--text-danger)" }}>Couldn't load: {loadError}</p>;
+  }
+  if (loading) {
+    return <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>;
+  }
+
+  return (
+    <div>
+      <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+        Business contact number <span style={{ color: "var(--text-muted)" }}>(optional)</span>
+      </label>
+      <div className="flex gap-3">
+        <input
+          type="text"
+          className="w-full max-w-sm rounded-md px-3 py-2.5 text-base"
+          style={inputStyle}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="e.g. 0917 123 4567"
+        />
+        <button
+          onClick={handleSave}
+          disabled={!dirty || busy}
+          className="rounded-md px-4 py-2.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+      <p className="mt-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
+        Shown on the Home header, alongside the business name and HQ address.
+      </p>
     </div>
   );
 }
@@ -526,11 +616,65 @@ function LocationVisibility() {
   );
 }
 
-export default function SettingsScreen() {
+// Signed-in account + sign out — lets Falcon switch between test accounts
+// without reinstalling. Sign out clears both the Supabase session and the
+// local session_cache, then hands control back to App.tsx to show the
+// sign-in screen again.
+function AccountSection({ onSignedOut }: { onSignedOut: () => void }) {
+  const [email, setEmail] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
+  }, []);
+
+  async function handleConfirmSignOut() {
+    setBusy(true);
+    await signOut();
+    onSignedOut();
+  }
+
+  return (
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Signed in as</p>
+        <p className="text-base" style={{ color: "var(--text-primary)" }}>{email ?? "…"}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="rounded-md px-3.5 py-2 text-sm font-medium"
+        style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
+      >
+        Sign out
+      </button>
+      {confirming && (
+        <ConfirmDialog
+          title="Sign out?"
+          description="You'll need to sign in again to use RACOS on this device."
+          confirmLabel="Sign out"
+          busy={busy}
+          onConfirm={handleConfirmSignOut}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function SettingsScreen({ onSignOut }: { onSignOut: () => void }) {
   const { settings, setSettings } = useSettings();
 
   return (
     <div className="max-w-xl space-y-6">
+      <div className="space-y-3">
+        <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Account</h2>
+        <div className="rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
+          <AccountSection onSignedOut={onSignOut} />
+        </div>
+      </div>
+
       <div className="space-y-3">
         <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Business</h2>
         <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
@@ -538,6 +682,11 @@ export default function SettingsScreen() {
           <div className="pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
             <div className="pt-3">
               <BusinessHeadquarters />
+            </div>
+          </div>
+          <div className="pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
+            <div className="pt-3">
+              <BusinessContactNumber />
             </div>
           </div>
         </div>

@@ -47,15 +47,15 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 ### NEXT
 | ID | PRIORITY | ITEM             | BLOCKED BY |
 |----|----------|------------------|------------|
-| ROT007 | HIGH | Wire real Supabase Auth; replace DEV_BUSINESS_ID/DEV_PROFILE_ID placeholder in lib/db.ts with signed-in session | — |
+| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system done (ROT023); remaining: code-login Edge Function, the portal app itself (full activity log + financials, vehicle status) | — |
+| ROT021 | HIGH | Cold-start inbound sync — first sign-in with no local cache pulls that business's existing data down from Supabase | — |
 
 ### DONE
 | ID | PRIORITY | ITEM        | SESSION |
 |----|----------|-------------|---------|
 | ROT001-006 | — | Phase 0 foundation: Tauri/React/TS/Tailwind scaffold, Supabase project + RLS schema, SQLite local cache + outbox, full local-first desktop UI (core screens/theme/pickers/settings), Rate Matrix tier pricing, PSGC municipalities + HQ relocation | SES001-006 |
-| ROT008 | MED  | Rate Matrix panel on the booking form (replaces expected-payment text); pricing finalized as exact elapsed hours x (daily rate / 24), rounded up to nearest 50 — no half-day/nightly billing rounding; half-day count kept as display-only reference | SES007 |
-| ROT009 | HIGH | Owners + Registry: `owners` table, vehicle must have an owner to register on Fleet, unified Vehicle & Owner Registry tab (Owners subtab), `action_logs` + Settings Action History for edits to optional fields, optional chassis/engine/GPS fields, structured owner address; Fleet registration simplified to Owner + seats (daily rate field removed); Rentals defaults to Ongoing subtab | SES007 |
-| ROT010 | HIGH | Booking lifecycle overhaul: status (pending/active/completed) derived from timing + actual_return_at/actual_departure_at rather than set directly; vehicle rented/available status auto-syncs with it; backdated-booking arrival confirmation + general Mark returned/Mark departed actions; live real-time overdue/departure-due counters; Home live clock; Settings > Dashboard cosmetic terminology toggles (Unit/Lessee/ETD/ETA) | SES007 |
+| ROT007 | HIGH | Real Supabase Auth wired: sign in/up (email+password), business+profile provisioning, session persists across restarts, offline fallback via local session_cache, legacy DEV_BUSINESS_ID local test data auto-reassigned to the real business on first real login | SES012 |
+| ROT008-010 | — | Rate Matrix panel (exact-hour billing, no half-day rounding); Owners + Registry (owners table, unified Vehicle & Owner Registry, action_logs, structured owner address); Booking lifecycle overhaul (timing-derived status, auto vehicle-status sync, live overdue/departure counters) | SES007 |
 | ROT011 | HIGH | Settlements module (Records + Remittances): payment tracking, rate-based breakdown billing on a single shared cash bucket per booking (PDF-verified against user's reference scenarios), print-ready statements, compact R/O summary toggle, editable Business name | SES008 |
 | ROT012 | MED  | Booking safety guards: pre-save absurd-duration confirmation on backdated entries, editable actual-return time with edit history, Fleet Status made read-only | SES008 |
 | ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
@@ -65,6 +65,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT017 | MED  | Remittances: new "Recorded split" mode (proportionally splits actual recorded base+overtime across blocks by hours, no absorption) alongside existing Bucket mode; Remittance period date filter excludes boundary-straddling bookings with a persistent explanatory banner; calendar date pickers highlight days with booking activity; fixed toolbar overflow pushing the Print button off-screen | SES011 |
 | ROT018 | MED  | Settlements > Records payment correction: actual recorded Payment (base/overtime) can be raised but never lowered, capped at each portion's expected rate-formula amount, Expected stays fixed as basis; every correction logs to the booking's action-log history | SES011 |
 | ROT019 | MED  | Settings > Locations: show/hide provinces by island group (Luzon/Visayas/Mindanao, at least one always on) applied everywhere provinces are picked (Rate Matrix, booking destination, owner address, HQ); booking form gained up-to-10 ranked top-destination quick-pick chips above the Province/City search fields | SES011 |
+| ROT022-023 | — | Home identity header (business name/HQ/email/contact) + Settings contact number field; global UI cleanup (search bar + per-tab titles removed, pending-sync badge moved into sidebar); Settings > Account sign-out; owner login-code system (Supabase owners table + RLS, generate-code action) — ROT020 prep, verified end to end | SES013 |
 
 ---
 ## DECISIONS
@@ -85,6 +86,10 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD013 | LOCKED | Every booking cancellation requires a staff-selected reason (preset options + free-text "Other"), permanently logged alongside a departure-state snapshot taken at cancellation time — read from the pre-cancellation row, never the booking's live/editable fields, so the audit trail can't be skewed by a later correction |
 | ROD014 | LOCKED | Recorded-payment corrections are additive only (never below the previously recorded value) and capped per portion at that portion's expected rate-formula amount; Expected payment itself is never edited and stays the correction basis |
 | ROD015 | LOCKED | Island-group province visibility is filtered only at UI option-construction call sites (never on the raw listProvinces()/listMunicipalities() result), always force-including the currently-selected value, so historical ID-to-label resolution and SearchableSelect's blank-on-missing-value behavior are never broken |
+| ROD016 | LOCKED | Domain: racos.app; Owners' Portal hosted on owners.racos.app subdomain — attached to a free-tier host (e.g. Vercel) at deploy time, not needed during development |
+| ROD017 | LOCKED | One business per desktop install — local cache is single-tenant scoped to whichever business is signed in; Supabase sync exists for backup/continuity if the device is lost or damaged, not for switching between multiple business accounts on one machine |
+| ROD018 | LOCKED | Owner login is a permanent 8-char code (not a claim-once step) — owner types it into the portal, browser remembers them after; requires a custom Edge Function since Supabase Auth has no native code-based login. Optional email can be attached later purely for recovery if a code is lost/reissued. Registering an owner requires connectivity (code uniqueness resolved against Supabase); the code is staff/admin-visible but read-only, never editable |
+| ROD019 | LOCKED | Which local tables/columns sync to Supabase stays a fixed, code-level decision (per-table mirror, not a full schema copy) — not exposed as a per-business runtime setting unless a concrete business need for it emerges |
 
 ---
 ## FILES
@@ -96,6 +101,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | FIXES.md    | /RACOS/_brain/FIXES.md        |
 | PLANS.md    | /RACOS/_brain/PLANS.md        |
 | TEMPORARIES.md | /RACOS/_brain/TEMPORARIES.md |
+| SCHEMA_LIBRARY.md | /RACOS/_brain/SCHEMA_LIBRARY.md — cross-check reference (columns/formulas per tab); updated alongside BRAINS, same cadence (session close / explicit request), not after every change |
 
 ---
-# Lines: 101 / 120 — Budget remaining: 19 — past amendment threshold (100); trim before next addition (candidate: fold ROT008-ROT010 into one summary row)
+# Lines: 107 / 120 — Budget remaining: 13 — past amendment threshold (100); ROT008-010 folded this pass; next candidate: fold ROT011-ROT014 into one summary row

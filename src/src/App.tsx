@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { CloudUpIcon, SearchIcon } from "./components/icons";
-import { ensureDevBusiness } from "./lib/db";
+import { bootstrapSession } from "./lib/auth";
 import { countPendingOutbox } from "./lib/repo/outbox";
 import { ensureDefaultSeatingBands } from "./lib/repo/rateMatrix";
 import { SettingsProvider } from "./lib/settingsContext";
 import AutoDepartureRunner from "./components/AutoDepartureRunner";
+import LoginScreen from "./screens/LoginScreen";
 import Sidebar from "./components/Sidebar";
 import HomeScreen from "./screens/HomeScreen";
 import VehiclesScreen from "./screens/VehiclesScreen";
@@ -20,30 +20,47 @@ import MapScreen from "./screens/MapScreen";
 
 export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "tools" | "map" | "settings";
 
-const TITLES: Record<Tab, string> = {
-  home: "Home",
-  vehicles: "Fleet",
-  customers: "Customers",
-  bookings: "Rentals",
-  rateMatrix: "Rate Matrix",
-  registry: "Registry",
-  settlements: "Settlements",
-  tools: "Tools",
-  map: "Map",
-  settings: "Settings",
-};
+type AuthState =
+  | { status: "checking" }
+  | { status: "signin" }
+  | { status: "complete-profile" }
+  | { status: "authenticated"; offline: boolean };
 
 function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [ready, setReady] = useState(false);
   const [pendingSync, setPendingSync] = useState(0);
   const [checkoutBookingId, setCheckoutBookingId] = useState<string | null>(null);
+  const [auth, setAuth] = useState<AuthState>({ status: "checking" });
+
+  async function runBootstrap() {
+    setReady(false);
+    try {
+      const result = await bootstrapSession();
+      if (result.authenticated) {
+        setAuth({ status: "authenticated", offline: result.offline });
+        await ensureDefaultSeatingBands();
+        setReady(true);
+        return;
+      }
+      setAuth({ status: result.reason === "profile-missing" ? "complete-profile" : "signin" });
+    } catch (err) {
+      // Surface as a normal sign-in screen rather than leaving the UI stuck —
+      // an unexpected error here shouldn't silently freeze the app.
+      console.error("bootstrapSession failed:", err);
+      setAuth({ status: "signin" });
+    }
+  }
 
   useEffect(() => {
-    ensureDevBusiness()
-      .then(() => ensureDefaultSeatingBands())
-      .then(() => setReady(true));
+    runBootstrap();
   }, []);
+
+  function handleSignedOut() {
+    setTab("home");
+    setCheckoutBookingId(null);
+    setAuth({ status: "signin" });
+  }
 
   useEffect(() => {
     if (!ready) return;
@@ -59,6 +76,24 @@ function App() {
     setTab(next);
   }
 
+  if (auth.status === "checking") {
+    return (
+      <main className="flex h-screen items-center justify-center" style={{ background: "var(--surface-2)" }}>
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>Starting up…</p>
+      </main>
+    );
+  }
+
+  if (auth.status === "signin" || auth.status === "complete-profile") {
+    return (
+      <LoginScreen
+        key={auth.status}
+        initialMode={auth.status === "complete-profile" ? "complete-profile" : "signin"}
+        onDone={runBootstrap}
+      />
+    );
+  }
+
   if (!ready) {
     return (
       <main className="flex h-screen items-center justify-center" style={{ background: "var(--surface-2)" }}>
@@ -71,39 +106,19 @@ function App() {
     <SettingsProvider>
     <AutoDepartureRunner />
     <div className="flex h-screen print:h-auto print:block" style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}>
-      <Sidebar active={tab} onSelect={goToTab} />
+      <Sidebar active={tab} onSelect={goToTab} pendingSync={pendingSync} />
 
       <main className="flex-1 overflow-y-auto print:overflow-visible">
-        <header
-          className="flex items-center gap-3 px-6 py-4 print:hidden"
-          style={{ borderBottom: "0.5px solid var(--border)" }}
-        >
+        {auth.status === "authenticated" && auth.offline && (
           <div
-            className="flex flex-1 items-center gap-2.5 rounded-md px-4 py-2.5 text-base"
-            style={{ border: "0.5px solid var(--border)", color: "var(--text-muted)" }}
+            className="px-6 py-2.5 text-sm print:hidden"
+            style={{ color: "var(--text-warning)" }}
           >
-            <SearchIcon size={19} />
-            Search vehicles, renters, rentals
+            Offline — showing data as of your last sign-in. Reconnect to sync.
           </div>
-          {pendingSync > 0 && (
-            <span
-              className="flex items-center gap-2 whitespace-nowrap rounded-md px-3.5 py-1.5 text-sm"
-              style={{ background: "var(--bg-warning)", color: "var(--text-warning)" }}
-            >
-              <CloudUpIcon size={17} />
-              {pendingSync} pending sync
-            </span>
-          )}
-        </header>
+        )}
 
-        <div
-          className="px-6 py-2.5 text-sm print:hidden"
-          style={{ color: "var(--text-warning)" }}
-        >
-          Dev mode — placeholder business; Supabase Auth isn't wired up yet.
-        </div>
-
-        <section className="px-6 pb-6">
+        <section className="px-6 py-6">
           {checkoutBookingId ? (
             <CheckoutScreen
               bookingId={checkoutBookingId}
@@ -111,9 +126,6 @@ function App() {
             />
           ) : (
             <>
-              <h1 className="mb-5 text-2xl font-semibold print:hidden" style={{ color: "var(--text-primary)" }}>
-                {TITLES[tab]}
-              </h1>
               {tab === "home" && (
                 <HomeScreen onNavigate={goToTab} onWalkInCheckout={() => goToTab("bookings")} />
               )}
@@ -132,7 +144,7 @@ function App() {
               {tab === "settlements" && <SettlementsScreen />}
               {tab === "tools" && <ToolsScreen />}
               {tab === "map" && <MapScreen />}
-              {tab === "settings" && <SettingsScreen />}
+              {tab === "settings" && <SettingsScreen onSignOut={handleSignedOut} />}
             </>
           )}
         </section>

@@ -43,7 +43,28 @@ export async function setHqProvince(hqProvinceId: string): Promise<BusinessProfi
      on conflict(business_id) do update set hq_province_id = excluded.hq_province_id, hq_city_id = null, updated_at = excluded.updated_at`,
     [business_id, hqProvinceId, now],
   );
-  return { business_id, hq_province_id: hqProvinceId, hq_city_id: null, updated_at: now };
+  const rows = await db.select<BusinessProfile[]>("select * from business_profile where business_id = ?", [
+    business_id,
+  ]);
+  return rows[0];
+}
+
+// Optional — editable any time from Settings > Business, independent of the
+// one-time-feeling HQ province/city setup above. Null clears it.
+export async function setBusinessContactNumber(contactNumber: string | null): Promise<BusinessProfile> {
+  const db = await getDb();
+  const business_id = currentBusinessId();
+  const now = new Date().toISOString();
+  await db.execute(
+    `insert into business_profile (business_id, hq_province_id, hq_city_id, contact_number, updated_at)
+     values (?, null, null, ?, ?)
+     on conflict(business_id) do update set contact_number = excluded.contact_number, updated_at = excluded.updated_at`,
+    [business_id, contactNumber, now],
+  );
+  const rows = await db.select<BusinessProfile[]>("select * from business_profile where business_id = ?", [
+    business_id,
+  ]);
+  return rows[0];
 }
 
 // Display-only refinement — assumes setHqProvince has already been called at

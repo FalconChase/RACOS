@@ -12,6 +12,7 @@ import {
   MapPinIcon,
   MapIcon,
   ToolIcon,
+  CloudUpIcon,
 } from "./icons";
 import type { Tab } from "../App";
 
@@ -39,6 +40,7 @@ const COMING_SOON = [{ label: "Inspections", icon: CameraIcon }];
 interface SidebarProps {
   active: Tab;
   onSelect: (tab: Tab) => void;
+  pendingSync: number;
 }
 
 const DEFAULT_WIDTH = 280;
@@ -57,7 +59,7 @@ function readStoredCollapsed(): boolean {
   return localStorage.getItem(COLLAPSED_KEY) === "true";
 }
 
-export default function Sidebar({ active, onSelect }: SidebarProps) {
+export default function Sidebar({ active, onSelect, pendingSync }: SidebarProps) {
   const [width, setWidth] = useState<number>(readStoredWidth);
   const [collapsed, setCollapsed] = useState<boolean>(readStoredCollapsed);
   const [dragging, setDragging] = useState(false);
@@ -180,6 +182,23 @@ export default function Sidebar({ active, onSelect }: SidebarProps) {
         <SettingsIcon size={20} strokeWidth={2} />
         {!collapsed && "Settings"}
       </button>
+
+      {pendingSync > 0 && (
+        <div
+          title={collapsed ? `${pendingSync} pending sync` : undefined}
+          className="flex items-center gap-2 rounded-md py-2 text-sm"
+          style={{
+            justifyContent: collapsed ? "center" : "flex-start",
+            paddingLeft: collapsed ? 0 : 12,
+            paddingRight: collapsed ? 0 : 12,
+            background: "var(--bg-warning)",
+            color: "var(--text-warning)",
+          }}
+        >
+          <CloudUpIcon size={16} />
+          {!collapsed && `${pendingSync} pending sync`}
+        </div>
+      )}
 
       {!collapsed && (
         <div

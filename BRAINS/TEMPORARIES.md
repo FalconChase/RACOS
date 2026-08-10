@@ -14,7 +14,8 @@
 ## NEXT
 | ID | PRIORITY | ITEM | BLOCKED BY |
 |----|----------|------|------------|
-| —  | —        | No active items | — |
+| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system done (ROT023); remaining: code-login Edge Function, portal app itself | — |
+| ROT021 | HIGH | Cold-start inbound sync — on first sign-in with no local cache (e.g. new/replacement device), pull that business's existing data down from Supabase into local SQLite | — |
 
 ## DONE
 | ID | PRIORITY | ITEM | SESSION |
@@ -37,6 +38,8 @@
 | ROT017 | MED  | Remittances Recorded-split mode + Remittance period filter/boundary banner + calendar highlighting + toolbar fix | SES011 |
 | ROT018 | MED  | Settlements payment correction (additive-only, capped at expected, logged) | SES011 |
 | ROT019 | MED  | Settings > Locations island-group toggle + top-destination quick-pick chips | SES011 |
+| ROT007 | HIGH | Real Supabase Auth wired: sign in/up, business+profile provisioning, offline session fallback, legacy dev-data reassignment | SES012 |
+| ROT022-023 | — | Home identity header + Settings contact field; UI cleanup (search bar/titles removed, sync badge to sidebar); Account sign-out; owner login-code system (Supabase owners table, generate-code action) | SES013 |
 
 ---
-# Lines: 42 / 100 — Budget remaining: 58
+# Lines: 45 / 100 — Budget remaining: 55

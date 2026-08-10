@@ -8,7 +8,7 @@ ROP003 | DEFERRED | Billing implementation — Stripe is the candidate, not yet 
 ROP004 | DEFERRED | Multi-branch conflict handling
 ROP005 | DEFERRED | Whether RACOS formally hosts public storefronts (ties to BOOQ directory model)
 ROP006 | DEFERRED | RACOS desktop "Track Fleet" GPS subtab — needs some form of Supabase read access in the app first, which doesn't exist yet (blocked on ROT007 or a narrower standalone read client)
-ROP007 | DEFERRED | Owners' Portal build (Next.js, read-only) — no codebase exists yet; would read vehicle_locations independently of the desktop app
+ROP007 | PROMOTED → ROT020 | Owners' Portal build — promoted to active scope (full activity log + financials, not just GPS/vehicle_locations); see TEMPORARIES.md / RACOS.md ROT020
 ROP008 | DEFERRED | GPS Stage 2: VPS hosting decision (Oracle free tier vs. ~$6/mo paid), move Traccar off embedded H2 to a real DB, redirect the real GT06 tracker via SMS (reversible; note DAGPS's current server IP/port first)
 ROP009 | DEFERRED | Local→Supabase outbound sync worker — intentionally left unbuilt while still in a delete-heavy local testing phase, to avoid orphaning test data in the shared DEV_BUSINESS_ID row on Supabase
 ROP010 | DEFERRED | Tamper-resistant tracker hardware (hardwired OBD/CAN-bus device with real odometer + power-loss alerting) as a future upgrade from the current plug GT06

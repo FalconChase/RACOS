@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createOwner, deleteOwner, listOwners, updateOwner } from "../lib/repo/owners";
+import { createOwner, deleteOwner, generateOwnerLoginCode, listOwners, updateOwner } from "../lib/repo/owners";
 import {
   createVehicle,
   deleteVehicle,
@@ -400,6 +400,49 @@ function VehicleOwnerForm() {
   );
 }
 
+// Owners' Portal login credential (ROD018) — never auto-generated; staff
+// click to create it explicitly, since it requires a live Supabase round
+// trip. Read-only once set, never editable.
+function OwnerLoginCode({ owner, onGenerated }: { owner: Owner; onGenerated: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleGenerate() {
+    setBusy(true);
+    setError(null);
+    try {
+      await generateOwnerLoginCode(owner);
+      onGenerated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (owner.login_code) {
+    return (
+      <div className="text-sm" style={{ color: "var(--text-muted)" }}>
+        Login code: <span className="font-mono font-semibold" style={{ color: "var(--text-primary)" }}>{owner.login_code}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={handleGenerate}
+        disabled={busy}
+        className="text-sm font-medium disabled:opacity-50"
+        style={{ color: "var(--text-accent)" }}
+      >
+        {busy ? "Generating…" : "Generate login code"}
+      </button>
+      {error && <span className="text-sm" style={{ color: "var(--text-danger)" }}>{error}</span>}
+    </div>
+  );
+}
+
 // --- Owners: browse + edit existing owner profiles --------------------------
 
 function OwnersList() {
@@ -487,6 +530,9 @@ function OwnersList() {
                   </div>
                   <div className="text-sm" style={{ color: "var(--text-muted)" }}>
                     {o.contact_number ?? "No contact number"}
+                  </div>
+                  <div className="mt-1.5">
+                    <OwnerLoginCode owner={o} onGenerated={refresh} />
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-3">

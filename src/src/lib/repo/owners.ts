@@ -1,6 +1,7 @@
 import { getDb, currentBusinessId } from "../db";
 import { queueOutbox } from "./outbox";
 import { diffField, logAction } from "./actionLog";
+import { supabase } from "../supabaseClient";
 import type { Owner } from "../types";
 
 export async function listOwners(): Promise<Owner[]> {
@@ -42,6 +43,7 @@ export async function createOwner(input: NewOwnerInput): Promise<Owner> {
     address_municipality_id: input.address_municipality_id ?? null,
     address_line: input.address_line,
     contact_number: input.contact_number ?? null,
+    login_code: null,
     created_at: now,
     updated_at: now,
   };
@@ -66,6 +68,48 @@ export async function createOwner(input: NewOwnerInput): Promise<Owner> {
   await queueOutbox(db, "owners", id, "insert", owner as unknown as Record<string, unknown>);
   await logAction({ entityType: "owner", entityId: id, entityLabel: owner.full_name, action: "created" });
   return owner;
+}
+
+// Ambiguous characters (0/O, 1/I/L) excluded — this gets typed by hand into
+// the Owners' Portal login field.
+const CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+function randomLoginCode(length = 8): string {
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return out;
+}
+
+// ROD018 — requires connectivity: this is what actually creates (or updates)
+// this owner's row on Supabase, not a separate sync step. Retries only on a
+// login_code collision (globally unique across every business); any other
+// failure (offline, RLS, etc.) surfaces immediately rather than retrying
+// blindly. Never called automatically — always an explicit staff click.
+export async function generateOwnerLoginCode(owner: Owner): Promise<string> {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const code = randomLoginCode();
+    const { error } = await supabase
+      .from("owners")
+      .upsert(
+        { id: owner.id, business_id: owner.business_id, full_name: owner.full_name, login_code: code },
+        { onConflict: "id" },
+      );
+
+    if (!error) {
+      const db = await getDb();
+      await db.execute("update owners set login_code = ? where id = ?", [code, owner.id]);
+      return code;
+    }
+
+    const isCodeCollision = error.code === "23505" && error.message.includes("login_code");
+    if (!isCodeCollision) {
+      throw new Error(error.message);
+    }
+  }
+  throw new Error("Couldn't generate a unique login code after several attempts — try again.");
 }
 
 // Partial update — only the fields present in `patch` are changed. Every

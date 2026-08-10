@@ -148,6 +148,24 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0023_location_visibility_settings.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 24,
+            description: "local_session_cache",
+            sql: include_str!("../migrations/0024_local_session_cache.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 25,
+            description: "business_contact_number",
+            sql: include_str!("../migrations/0025_business_contact_number.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 26,
+            description: "owner_login_code",
+            sql: include_str!("../migrations/0026_owner_login_code.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

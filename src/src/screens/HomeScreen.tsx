@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listCustomers } from "../lib/repo/customers";
 import { listBookings } from "../lib/repo/bookings";
+import { getCurrentBusinessName } from "../lib/db";
+import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
+import { supabase } from "../lib/supabaseClient";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime, formatTime } from "../lib/dateFormat";
 import { formatHoursMinutes } from "../lib/duration";
@@ -20,14 +23,44 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [businessName, setBusinessName] = useState<string | null>(null);
+  const [hqLabel, setHqLabel] = useState<string | null>(null);
+  const [contactNumber, setContactNumber] = useState<string | null>(null);
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listVehicles(), listCustomers(), listBookings()]).then(([v, c, b]) => {
-      setVehicles(v);
-      setCustomers(c);
-      setBookings(b);
-      setLoading(false);
-    });
+    getCurrentBusinessName().then(setBusinessName).catch(() => setBusinessName(null));
+
+    Promise.all([getBusinessProfile(), listProvinces(), listMunicipalities()])
+      .then(([profile, provinces, municipalities]) => {
+        setContactNumber(profile?.contact_number ?? null);
+        const province = provinces.find((p) => p.id === profile?.hq_province_id);
+        const municipality = municipalities.find((m) => m.id === profile?.hq_city_id);
+        setHqLabel(
+          province ? [municipality?.name, province.name].filter(Boolean).join(", ") : null,
+        );
+      })
+      .catch(() => {
+        setHqLabel(null);
+        setContactNumber(null);
+      });
+
+    supabase.auth.getUser().then(({ data }) => setAccountEmail(data.user?.email ?? null));
+  }, []);
+
+  useEffect(() => {
+    Promise.all([listVehicles(), listCustomers(), listBookings()])
+      .then(([v, c, b]) => {
+        setVehicles(v);
+        setCustomers(c);
+        setBookings(b);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
   }, []);
 
   // Live clock for the "Today" header — ticks every second so the displayed
@@ -141,6 +174,21 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
 
   return (
     <div className="space-y-5">
+      {businessName && (
+        <div>
+          <div className="text-3xl font-semibold" style={{ color: "var(--text-primary)" }}>
+            {businessName}
+          </div>
+          {(hqLabel || accountEmail || contactNumber) && (
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-sm" style={{ color: "var(--text-muted)" }}>
+              {hqLabel && <span>{hqLabel}</span>}
+              {accountEmail && <span>{accountEmail}</span>}
+              {contactNumber && <span>{contactNumber}</span>}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-4">
         <StatCard label="On rent" value={onRent} loading={loading} />
         <StatCard label="Available" value={available} loading={loading} />
@@ -152,7 +200,9 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
         <div className="mb-2.5 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
           Today — {today} · {formatTime(now.toISOString(), settings)}
         </div>
-        {loading ? (
+        {loadError ? (
+          <p className="text-base" style={{ color: "var(--text-danger)" }}>Couldn't load: {loadError}</p>
+        ) : loading ? (
           <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
         ) : homeRows.length === 0 ? (
           <p className="text-base" style={{ color: "var(--text-muted)" }}>Nothing due today.</p>
