@@ -26,6 +26,7 @@ ONBOARDED   : 2026-07-25
 | Migrations (server) | /RACOS/supabase/migrations/ |
 | Local cache      | SQLite via tauri-plugin-sql; mirrors core tables + outbox + sync_state |
 | Migrations (local) | /RACOS/src/src-tauri/migrations/ |
+| Owners' Portal | /RACOS/portal — Next.js/TS/Tailwind, code-login via `owner-login` Edge Function, verified end to end (SES014); `next dev`/`build` pinned to `--webpack` (RC011) |
 
 ---
 ## PHASE
@@ -47,7 +48,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 ### NEXT
 | ID | PRIORITY | ITEM             | BLOCKED BY |
 |----|----------|------------------|------------|
-| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system done (ROT023); remaining: code-login Edge Function, the portal app itself (full activity log + financials, vehicle status) | — |
+| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity, login-code system, code-login Edge Function, and portal scaffold (login → dashboard, verified end to end by Falcon) all shipped (SES014); remaining: real data screens (activity log, financials, vehicle status) | — |
 | ROT021 | HIGH | Cold-start inbound sync — first sign-in with no local cache pulls that business's existing data down from Supabase | — |
 
 ### DONE
@@ -56,10 +57,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROT001-006 | — | Phase 0 foundation: Tauri/React/TS/Tailwind scaffold, Supabase project + RLS schema, SQLite local cache + outbox, full local-first desktop UI (core screens/theme/pickers/settings), Rate Matrix tier pricing, PSGC municipalities + HQ relocation | SES001-006 |
 | ROT007 | HIGH | Real Supabase Auth wired: sign in/up (email+password), business+profile provisioning, session persists across restarts, offline fallback via local session_cache, legacy DEV_BUSINESS_ID local test data auto-reassigned to the real business on first real login | SES012 |
 | ROT008-010 | — | Rate Matrix panel (exact-hour billing, no half-day rounding); Owners + Registry (owners table, unified Vehicle & Owner Registry, action_logs, structured owner address); Booking lifecycle overhaul (timing-derived status, auto vehicle-status sync, live overdue/departure counters) | SES007 |
-| ROT011 | HIGH | Settlements module (Records + Remittances): payment tracking, rate-based breakdown billing on a single shared cash bucket per booking (PDF-verified against user's reference scenarios), print-ready statements, compact R/O summary toggle, editable Business name | SES008 |
-| ROT012 | MED  | Booking safety guards: pre-save absurd-duration confirmation on backdated entries, editable actual-return time with edit history, Fleet Status made read-only | SES008 |
-| ROT013 | MED  | Tools tab + Car Activity: per-vehicle month timeline (ETD/ETA/actual bars), overlap-conflict detection, viewport-fit day grid, self-clamping hover tooltip | SES008 |
-| ROT014 | HIGH | Tools > Logs tab (flat most-recent-first booking history, owner/vehicle filters, sort modes, print) + full lifecycle audit trail: action_logs widened to completed/cancelled/departed; cancellation now requires a staff-picked reason + departure-state snapshot (flags cancel-after-departure red vs. blue, with a variance); auto-mark-departed setting (background runner, tagged distinct from a manual click) | SES009 |
+| ROT011-014 | — | Settlements (Records + Remittances, single-shared-bucket breakdown billing, print, R/O toggle); booking safety guards (duration confirmation, editable return time, read-only Fleet Status); Tools tab + Car Activity timeline (overlap detection); Tools > Logs + full lifecycle audit trail (cancellation reason + departure snapshot, auto-mark-departed) | SES008-009 |
 | ROT015 | HIGH | GPS tracking pipeline (Stage 0+1 proven, Traccar replacing DAGPS): vehicle_locations table + vehicles.gps_device_id/gps_provider/gps_notes on Supabase, RLS via current_business_id(); gps-ingest Edge Function deployed; full local pipeline (Docker Traccar + Android phone) tested end-to-end with real GPS data | SES010 |
 | ROT016 | MED  | Map tab (real Leaflet map, vehicle dropdown, no GPS pins yet) added as a top-level nav item; Fleet remodeled to a simplified read-mostly view (Plate/Make-Model/Status/Current Location); full vehicle admin moved to a new Registry > Vehicles subtab; car-detail popup (click a Fleet row) with spec fields, Activity History table, and user-controlled Fill/Fit image display set at upload time | SES011 |
 | ROT017 | MED  | Remittances: new "Recorded split" mode (proportionally splits actual recorded base+overtime across blocks by hours, no absorption) alongside existing Bucket mode; Remittance period date filter excludes boundary-straddling bookings with a persistent explanatory banner; calendar date pickers highlight days with booking activity; fixed toolbar overflow pushing the Print button off-screen | SES011 |
@@ -90,6 +88,7 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | ROD017 | LOCKED | One business per desktop install — local cache is single-tenant scoped to whichever business is signed in; Supabase sync exists for backup/continuity if the device is lost or damaged, not for switching between multiple business accounts on one machine |
 | ROD018 | LOCKED | Owner login is a permanent 8-char code (not a claim-once step) — owner types it into the portal, browser remembers them after; requires a custom Edge Function since Supabase Auth has no native code-based login. Optional email can be attached later purely for recovery if a code is lost/reissued. Registering an owner requires connectivity (code uniqueness resolved against Supabase); the code is staff/admin-visible but read-only, never editable |
 | ROD019 | LOCKED | Which local tables/columns sync to Supabase stays a fixed, code-level decision (per-table mirror, not a full schema copy) — not exposed as a per-business runtime setting unless a concrete business need for it emerges |
+| ROD020 | LOCKED | Owner-portal session model: `owner-login` Edge Function verifies the code, then mints a custom HS256 JWT (owner_id/business_id claims, signed with the project's real Auth JWT secret) rather than an opaque token + proxy-table API — portal reads go straight through PostgREST/RLS like any normal Supabase Auth session; chosen over the proxy alternative to match this project's RLS-everywhere pattern |
 
 ---
 ## FILES
@@ -104,4 +103,4 @@ Phase 0 build, deep into local-first UI. Desktop app has a full working screen s
 | SCHEMA_LIBRARY.md | /RACOS/_brain/SCHEMA_LIBRARY.md — cross-check reference (columns/formulas per tab); updated alongside BRAINS, same cadence (session close / explicit request), not after every change |
 
 ---
-# Lines: 107 / 120 — Budget remaining: 13 — past amendment threshold (100); ROT008-010 folded this pass; next candidate: fold ROT011-ROT014 into one summary row
+# Lines: 106 / 120 — Budget remaining: 14 — past amendment threshold (100); ROT011-014 folded this pass; next candidate: fold ROT016-019 into one summary row

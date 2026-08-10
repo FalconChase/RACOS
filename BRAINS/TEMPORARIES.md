@@ -14,7 +14,7 @@
 ## NEXT
 | ID | PRIORITY | ITEM | BLOCKED BY |
 |----|----------|------|------------|
-| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system done (ROT023); remaining: code-login Edge Function, portal app itself | — |
+| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system (ROT023) and code-login Edge Function (SES014, custom JWT, ROD020) both shipped; remaining: the portal app itself | — |
 | ROT021 | HIGH | Cold-start inbound sync — on first sign-in with no local cache (e.g. new/replacement device), pull that business's existing data down from Supabase into local SQLite | — |
 
 ## DONE
@@ -40,6 +40,8 @@
 | ROT019 | MED  | Settings > Locations island-group toggle + top-destination quick-pick chips | SES011 |
 | ROT007 | HIGH | Real Supabase Auth wired: sign in/up, business+profile provisioning, offline session fallback, legacy dev-data reassignment | SES012 |
 | ROT022-023 | — | Home identity header + Settings contact field; UI cleanup (search bar/titles removed, sync badge to sidebar); Account sign-out; owner login-code system (Supabase owners table, generate-code action) | SES013 |
+| —  | HIGH | ROT020 code-login Edge Function (`owner-login`, custom HS256 JWT session model, ROD020) — deployed, verify_jwt off, JWT_SECRET set, verified end to end against a real owner code (Invoke-RestMethod, real signed JWT returned) | SES014 |
+| —  | MED  | ROT020 portal scaffold (/RACOS/portal, Next.js + TS + Tailwind, login/dashboard skeleton) — verified end to end by Falcon (real login code → dashboard, owner name from JWT); RC011 (Turbopack/lightningcss on Windows) hit and fixed, dev/build scripts pinned to `--webpack` | SES014 |
 
 ---
-# Lines: 45 / 100 — Budget remaining: 55
+# Lines: 47 / 100 — Budget remaining: 53
