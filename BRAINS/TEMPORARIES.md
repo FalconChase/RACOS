@@ -14,7 +14,6 @@
 ## NEXT
 | ID | PRIORITY | ITEM | BLOCKED BY |
 |----|----------|------|------------|
-| ROT020 | HIGH | Owners' Portal (Next.js, owners.racos.app) — owner identity + login-code system (ROT023) and code-login Edge Function (SES014, custom JWT, ROD020) both shipped; remaining: the portal app itself | — |
 | ROT021 | HIGH | Cold-start inbound sync — on first sign-in with no local cache (e.g. new/replacement device), pull that business's existing data down from Supabase into local SQLite | — |
 
 ## DONE
@@ -42,6 +41,9 @@
 | ROT022-023 | — | Home identity header + Settings contact field; UI cleanup (search bar/titles removed, sync badge to sidebar); Account sign-out; owner login-code system (Supabase owners table, generate-code action) | SES013 |
 | —  | HIGH | ROT020 code-login Edge Function (`owner-login`, custom HS256 JWT session model, ROD020) — deployed, verify_jwt off, JWT_SECRET set, verified end to end against a real owner code (Invoke-RestMethod, real signed JWT returned) | SES014 |
 | —  | MED  | ROT020 portal scaffold (/RACOS/portal, Next.js + TS + Tailwind, login/dashboard skeleton) — verified end to end by Falcon (real login code → dashboard, owner name from JWT); RC011 (Turbopack/lightningcss on Windows) hit and fixed, dev/build scripts pinned to `--webpack` | SES014 |
+| ROT024 | HIGH | Outbound sync worker (ROP009, promoted from PLANS.md) — outbox drain to Supabase, idempotent upserts, connectivity-aware sync_state tracking; Cloud vehicles/bookings widened (seats/owner_id/chassis/engine_number; destination_label/purpose/payment fields/actual timestamps); owner JWT-claim RLS added | SES015 |
+| ROT020 | HIGH | Owners' Portal real data screens — Vehicle status, Activity log, Financials, reading owner-scoped Supabase data (owner RLS) via createOwnerClient | SES015 |
+| ROT025 | MED  | Factory reset AND Reset test data both removed (bulk-wiping a business's own history undermines transparency, even local-only/logged); action_logs widened for 'system'/'reset' (migration 0028) so the remaining bulk tool, Clear stale test data (cross-business rows only), is always logged (ROD021) | SES015 |
 
 ---
-# Lines: 47 / 100 — Budget remaining: 53
+# Lines: 49 / 100 — Budget remaining: 51

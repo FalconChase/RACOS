@@ -2,7 +2,7 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-10 (SES013), cross-checked directly against the live Supabase schema and all local migration files through 0026.
+Last compiled: 2026-08-10 (SES015), cross-checked directly against the live Supabase schema and all local migration files through 0026.
 
 ---
 
@@ -132,10 +132,10 @@ Every edit (and creation) is written to **action_logs**:
 |---|---|---|
 | id | text PK | |
 | business_id | text FK | |
-| entity_type | text | `owner` \| `vehicle` \| `booking` |
+| entity_type | text | `owner` \| `vehicle` \| `booking` \| `system` (SES015 — business-wide admin actions, not one specific row) |
 | entity_id | text | |
 | entity_label | text | snapshot (plate/owner name) taken at log time, survives later deletion |
-| action | text | `created` \| `updated` \| `completed` \| `cancelled` \| `departed` (last 3 are booking-only) |
+| action | text | `created` \| `updated` \| `completed` \| `cancelled` \| `departed` (booking-only) \| `reset` (SES015 — system-only, Settings > Developer bulk local wipes; see ROD021) |
 | changes | text (JSON) \| null | array of `{field, label, old, new}`; null for `created` and the booking-lifecycle actions |
 | performed_by | text \| null | |
 | created_at | text (ISO) | |
@@ -251,7 +251,7 @@ RLS: select-only via `business_id = current_business_id()` — no insert/update/
 | show_luzon/visayas/mindanao | showLuzon/Visayas/Mindanao | 0/1 each, default 1, at least one must stay on (UI-enforced) |
 
 **Account section (new, ROT007):** signed-in email (from Supabase Auth session, not stored locally as its own field) + Sign Out button.
-**Location Visibility, Reset test data, Factory reset** — act on the tables listed under Fleet/Registry/Customers/Rentals above; see `factoryReset.ts` for the exact wipe list (below).
+**Location Visibility, Clear stale test data** — Location Visibility acts on provinces/municipalities visibility as described elsewhere. Clear stale test data (`clearStaleBusinessData()` in `factoryReset.ts` — file name predates SES015's removal of `factoryReset()` itself) only ever clears local vehicles/customers/bookings/payments rows tied to a business_id OTHER than the current one (cross-business leftovers, never this business's own data); local-only, never pushes a delete to Cloud, always logs a `system`/`reset` entry to `action_logs` (ROD021). Factory reset AND Reset test data were both removed SES015 — bulk-wiping a business's own real history undermines RACOS's transparency guarantees even when scoped to local data with an audit entry; sign-out + fresh business signup is now the only "start clean" path.
 
 ---
 
@@ -275,20 +275,39 @@ All tables RLS-enabled, scoped by `business_id = current_business_id()` except w
 
 **businesses**: id (uuid PK), name, owner_id (uuid → auth.users), plan (trial/free/paid), trial_ends_at, created_at, updated_at.
 **profiles**: id (uuid PK → auth.users), business_id, role (owner/manager/staff), full_name, created_at, updated_at.
-**vehicles**: id, business_id, plate_number, make, model, year, status, daily_rate, gps_device_id, gps_provider, gps_notes, created_at, updated_at. *(Narrower than local — no seats/owner_id/chassis/engine/fuel/car_image/etc. Partial mirror by design, ROD019.)*
+**vehicles**: id, business_id, plate_number, make, model, year, status, daily_rate, gps_device_id, gps_provider, gps_notes, created_at, updated_at, **seats, owner_id (uuid → owners, on delete set null), chassis_number, engine_number** (added SES015, ROP009 migration). *(Still narrower than local — fuel/fuel_capacity/transmission/car_image/car_image_fit stay local-only by design, ROD019.)*
 **customers**: id, business_id, full_name, email, phone, license_number, created_at, updated_at. *(Full mirror — matches local exactly.)*
-**bookings**: id, business_id, vehicle_id, customer_id, start_date, end_date, status, total_price, created_by, created_at, updated_at. *(Narrower than local — no destination/purpose/payment-split/actual-timestamps/resolved_rate columns. Frozen at its original ROT002 shape since SES002; local has grown to 20+ booking-related fields since.)*
+**bookings**: id, business_id, vehicle_id, customer_id, start_date, end_date, status, total_price, created_by, created_at, updated_at, **destination_label, purpose, payment_amount, expected_payment, resolved_rate, additional_payment, actual_return_at, actual_departure_at** (added SES015, ROP009 migration). `destination_label` is a denormalized text string (e.g. "Bacoor City, Cavite") resolved by the sync worker from the local provinces/municipalities tables at push time — Cloud has no geo reference tables to FK against. `total_price` stays frozen/dormant (its original ROT002 shape, unused by the app — see Dormant tables below); the new money columns are text (project-wide exact-decimal convention) rather than matching total_price's numeric type.
 **payments**: id, business_id, booking_id, amount, method, status, paid_at, created_at. *(See "Dormant tables" below.)*
 **vehicle_locations**: see Map section above.
-**owners** (new SES013): id, business_id, full_name, login_code (unique), created_at, updated_at — see Registry > Owners section above for full detail. Created per-row on demand (login-code generation), not via a bulk sync.
+**owners**: id, business_id, full_name, login_code (unique), created_at, updated_at — see Registry > Owners section above for full detail. A bare `{id, business_id, full_name}` row is now also auto-created by the sync worker (SES015) the first time it needs to push a vehicle with an `owner_id`, if login-code generation hasn't created one already — never touches `login_code`.
+
+**Owner JWT claim helpers (SES015, ROP009 migration)**: `current_owner_id()` / `current_owner_business_id()` — plain SQL functions reading `auth.jwt() ->> 'owner_id'` / `'business_id'` (the custom claims `owner-login` mints, ROD020), fixed `search_path`, granted to `authenticated` only. Mirror `current_business_id()`'s role but for owner sessions, which have no `profiles` row to resolve through.
+
+**Owner-scoped RLS (SES015, additive alongside the existing staff `..._all` policies — Postgres OR-combines permissive policies per command, so a staff session and an owner session each match only their own)**:
+- `owner_read_own_vehicles` on `vehicles`, select-only: `owner_id = current_owner_id() and business_id = current_owner_business_id()`.
+- `owner_read_own_bookings` on `bookings`, select-only: `business_id = current_owner_business_id() and vehicle_id in (select id from vehicles where owner_id = current_owner_id())`.
+- No policy on `customers` — the Owners' Portal never reads renter identity (privacy default, not yet a formal RACOS.md decision).
+
+---
+
+## Owners' Portal (ROT020) — data screens
+
+Next.js app at `/RACOS/portal`. `lib/ownerData.ts` is the one place that queries Supabase — every call goes through `createOwnerClient(token)` (the owner's session JWT as bearer), so RLS above is what actually scopes results; the queries themselves never filter by owner.
+
+- **Vehicle status tab** — `vehicles` (plate/make/model/year/seats/status), owner-scoped by RLS.
+- **Activity log tab** — `bookings` joined to `vehicles(plate_number, make, model)`, ordered by `start_date desc`. Shows dates/destination/purpose/status only, never the customer.
+- **Financials tab** — same `bookings` rows, summed client-side (`summarizeFinancials()`): `payment_amount + additional_payment` = Collected, `expected_payment` = Expected, both overall and per-vehicle. Cancelled bookings excluded from sums.
 
 ---
 
 ## Dormant / unused tables
 
-**payments** — exists on both Local and Cloud (from the original ROT002/ROT003 mirror), but has no repo file, no screen reads or writes it. The app tracks payment via `bookings.payment_amount` / `expected_payment` / `additional_payment` / `resolved_rate` instead. Worth deciding whether to formally repurpose or drop this table before it's ever synced for real.
+**payments** — exists on both Local and Cloud (from the original ROT002/ROT003 mirror), but has no repo file, no screen reads or writes it. The app tracks payment via `bookings.payment_amount` / `expected_payment` / `additional_payment` / `resolved_rate` instead. Worth deciding whether to formally repurpose or drop this table before it's ever synced for real. The sync worker (SES015) maps it 1:1 for completeness but nothing ever queues an outbox entry for it.
 
-**businesses / profiles (Cloud)** — currently 1 row each (your real test account from SES012); everything else on Cloud is still empty (0 rows) since the outbound sync worker (ROP009) doesn't exist yet — nothing local has actually been pushed up.
+**bookings.total_price (Cloud)** — frozen at its original ROT002 shape (see above); the sync worker never writes to it, `payment_amount`/`expected_payment`/etc. are the real figures going forward.
+
+**businesses / profiles (Cloud)** — still just the real test account rows from SES012; the outbound sync worker (SES015, ROP009) only pushes vehicles/customers/bookings/owners, not businesses/profiles (those are written directly at signup/auth time, see lib/auth.ts).
 
 ---
 
@@ -329,6 +348,10 @@ isReturningToday  = status == "active"  AND not overdue AND same_day(end_date, n
 
 **Overtime rounding**: overtime hours are rounded to the nearest 30 minutes (`roundToNearestHalfHour`) before billing, to avoid messy non-round peso amounts — the base scheduled duration is never rounded this way.
 
-**Free-tier sync threshold (ROD004, not yet enforced — sync worker unbuilt)**: intended trigger is 5 days offline OR 50 unsynced records in `outbox`, whichever comes first.
+**Free-tier sync threshold (ROD004, tracked but not yet enforced)**: `sync_state.offline_since`/`last_synced_at` are now kept live by the sync worker (SES015) — `offline_since` is set the moment a push fails on a connectivity error and cleared on the next successful push. Intended trigger is 5 days offline OR 50 unsynced records in `outbox`, whichever comes first; no UI/gating reads this yet.
+
+**Sync cadence (SES015 follow-up)**: automatic (`SyncRunner`, App.tsx) is hourly and silent — runs once on app launch, then every 60 minutes, no user action. Settings > Account also has a manual "Sync now" button for immediacy, calling the identical `runOutboundSync()`; both share a single in-process `syncing` flag (`isSyncRunning()`) so they can never run concurrently — an overlapping manual click while the hourly poll is mid-flight returns `{skipped: true}` instead of double-processing outbox rows, and the button itself polls `isSyncRunning()` to stay disabled for the whole window, not just its own click. Neither path works offline — a manual click while disconnected fails the same way the automatic poll does (marks `sync_state.offline_since`, leaves the batch `failed` for the next attempt).
+
+**One-time backfill (migration 0027, `sync_state.backfilled_at`)**: the outbox only ever gained entries going forward from ROT003 — any local vehicles/customers/owners/bookings row created or last touched before the sync worker existed has no outbox history, so it would otherwise never be pushed. `ensureBackfilled()` runs at the start of every drain, per business, exactly once: queues an `insert` for every local row in those four tables with no existing outbox entry for its id, then sets `backfilled_at` so it never rescans.
 
 **Booking reference**: `RNT-` + first 8 chars of the booking's uuid, uppercased. Computed on the fly everywhere it's shown, never stored.

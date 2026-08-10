@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "../lib/settingsContext";
 import { APP_VERSION } from "../lib/version";
 import { getBusinessProfile, listMunicipalities, listProvinces, setBusinessContactNumber, setHqCity, setHqProvince } from "../lib/repo/locations";
-import { getCurrentBusinessName, setCurrentBusinessName } from "../lib/db";
-import { resetAllBookings } from "../lib/repo/bookings";
-import { factoryReset } from "../lib/repo/factoryReset";
+import { getCurrentBusinessName, setCurrentBusinessName, getDb, currentBusinessId } from "../lib/db";
+import { clearStaleBusinessData } from "../lib/repo/factoryReset";
 import { listActionLogs } from "../lib/repo/actionLog";
+import { countPendingOutbox } from "../lib/repo/outbox";
+import { runOutboundSync, isSyncRunning } from "../lib/repo/sync";
 import { formatDateTime } from "../lib/dateFormat";
 import { isProvinceVisible } from "../lib/islandGroups";
 import { signOut } from "../lib/auth";
@@ -23,6 +24,10 @@ const inputStyle: React.CSSProperties = {
 // The name shown on printed Remittance statements (RemittancesReport.tsx)
 // and anywhere else the business identifies itself — separate from the HQ
 // province/city below, which is pricing-tier reference data, not identity.
+// Editable: renaming only ever touches the name column, never businesses.id
+// (an immutable uuid, unrelated to name) — every FK/RLS/sync reference in
+// the app keys off business_id, never the display name, so there's no
+// conflict risk in either direction.
 function BusinessName() {
   const [saved, setSaved] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -312,30 +317,52 @@ function BusinessContactNumber() {
   );
 }
 
-// DEV-ONLY: clears booking test data (ongoing + history) behind a real popup
-// confirmation, since it's destructive. Remove this section once real
-// customer data exists, same spirit as the DEV-ONLY seed logic in lib/db.ts.
-function ResetTestData() {
+// "Reset test data" was removed (this session) — same reasoning as Factory
+// reset's removal, one step further: a button that lets an admin wipe real
+// booking history (even just local history, even with an audit log entry
+// recording that a wipe happened) works against RACOS's core transparency
+// guarantees — append-only corrections, mandatory cancellation reasons, an
+// Owners' Portal an owner is meant to trust. The original code even called
+// this DEV-ONLY, meant to be removed once real customer data existed. The
+// one legitimate use it covered — clearing demo bookings before a business
+// goes live — is already handled by signing out and provisioning a fresh
+// business (zero history from day one, no wipe tool needed). See
+// BRAINS/RACOS.md ROD021 and BRAINS/SESSIONS.md for the full reasoning.
+
+// ROT024 follow-up — targeted cleanup for local vehicles/customers/bookings/
+// payments rows tied to a business_id other than the currently signed-in
+// one (leftover from testing a different account on this device, per the
+// SES013-flagged risk). These can never sync — Cloud RLS correctly rejects
+// them since they don't belong to this session's business — so they sit
+// permanently "failed", retrying forever. Narrower and safer than Factory
+// reset below: never touches the current business's own data, and never
+// touches owners/rate matrix/settings at all.
+function ClearStaleData() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
-  async function handleReset() {
+  async function handleClear() {
     setBusy(true);
-    const { deletedCount } = await resetAllBookings();
+    const summary = await clearStaleBusinessData();
     setBusy(false);
     setConfirming(false);
-    setResult(`Cleared ${deletedCount} booking${deletedCount === 1 ? "" : "s"}.`);
+    const total = summary.vehicles + summary.customers + summary.bookings + summary.payments;
+    setResult(
+      total === 0
+        ? "Nothing to clear — every local record already belongs to this business."
+        : `Cleared ${total} stale record${total === 1 ? "" : "s"} (${summary.vehicles} vehicle${summary.vehicles === 1 ? "" : "s"}, ${summary.customers} customer${summary.customers === 1 ? "" : "s"}, ${summary.bookings} booking${summary.bookings === 1 ? "" : "s"}).`,
+    );
   }
 
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <div className="text-base" style={{ color: "var(--text-primary)" }}>Reset booking test data</div>
+        <div className="text-base" style={{ color: "var(--text-primary)" }}>Clear stale test data</div>
         <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
-          Deletes every booking — ongoing and history — for this business. Vehicles, customers, and rate/location
-          data are untouched. This also frees up vehicles that can't otherwise be deleted while a booking still
-          references them. Cannot be undone.
+          Deletes local vehicles/customers/bookings left over from a different signed-in business on this device —
+          the kind that shows up as permanently failed in the Sync section above. Never touches this business's own
+          data. Cannot be undone.
         </p>
         {result && (
           <p className="mt-1 text-sm" style={{ color: "var(--text-success)" }}>{result}</p>
@@ -350,109 +377,45 @@ function ResetTestData() {
           className="rounded-md px-4 py-2 text-base font-medium"
           style={{ border: "0.5px solid var(--border-strong)", color: "var(--text-danger)" }}
         >
-          Reset test data
+          Clear stale data
         </button>
       </div>
 
       {confirming && (
         <ConfirmDialog
-          title="Delete all bookings?"
-          description="This permanently deletes every booking — ongoing and history — for this business. Vehicles, customers, and rate/location data are untouched. This cannot be undone."
-          confirmLabel="Yes, delete all bookings"
+          title="Clear stale test data?"
+          description="This permanently deletes local vehicles, customers, bookings, and payments tied to a different business than the one you're currently signed into. Your current business's data is never touched. This cannot be undone."
+          confirmLabel="Yes, clear stale data"
           busy={busy}
           onCancel={() => setConfirming(false)}
-          onConfirm={handleReset}
+          onConfirm={handleClear}
         />
       )}
     </div>
   );
 }
 
-// DEV-ONLY: full clean slate — vehicles, customers, bookings, payments, rate
-// matrix, seating bands, custom rates, and the HQ province selection, all
-// wiped for this business. Requires typing a confirmation phrase in the
-// popup on top of the Cancel/Confirm buttons, since this is considerably
-// more destructive than "Reset test data" above (that one only touches
-// bookings). Provinces/municipalities (global reference data) and app
-// settings (device UI prefs) are left alone — see factoryReset() for why.
-function FactoryReset() {
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-
-  async function handleReset() {
-    setBusy(true);
-    const summary = await factoryReset();
-    setBusy(false);
-    setConfirming(false);
-    setResult(
-      `Cleared ${summary.vehicles} vehicle${summary.vehicles === 1 ? "" : "s"}, ` +
-        `${summary.owners} owner${summary.owners === 1 ? "" : "s"}, ` +
-        `${summary.customers} customer${summary.customers === 1 ? "" : "s"}, and ` +
-        `${summary.bookings} booking${summary.bookings === 1 ? "" : "s"}.`,
-    );
-  }
-
-  return (
-    <div className="flex items-start justify-between gap-4 pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
-      <div className="pt-3">
-        <div className="text-base" style={{ color: "var(--text-primary)" }}>Factory reset</div>
-        <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
-          Wipes every vehicle, owner, customer, booking, seating band, rate matrix row, custom rate, and the HQ
-          province setting for this business — a full clean slate for starting over from scratch.
-          Provinces/municipalities (shared reference data) and device settings are left untouched. This cannot be
-          undone.
-        </p>
-        {result && (
-          <p className="mt-1 text-sm" style={{ color: "var(--text-success)" }}>{result}</p>
-        )}
-      </div>
-      <div className="mt-3 shrink-0">
-        <button
-          onClick={() => {
-            setConfirming(true);
-            setResult(null);
-          }}
-          className="rounded-md px-4 py-2 text-base font-medium"
-          style={{ background: "var(--bg-danger)", color: "var(--text-danger)" }}
-        >
-          Factory reset
-        </button>
-      </div>
-
-      {confirming && (
-        <ConfirmDialog
-          title="Factory reset — start from scratch?"
-          description={
-            <>
-              This permanently deletes every vehicle, owner, customer, booking, seating band, rate matrix row, and
-              custom rate for this business, and clears the HQ province setting. Provinces/municipalities and
-              device settings are kept. There is no undo.
-            </>
-          }
-          confirmLabel="Factory reset everything"
-          requireTypedConfirmation="RESET"
-          busy={busy}
-          onCancel={() => setConfirming(false)}
-          onConfirm={handleReset}
-        />
-      )}
-    </div>
-  );
-}
+// Factory reset was removed (this session) — an admin who wants a genuine
+// clean slate now just signs out and provisions a fresh business under the
+// same or a different email (bootstrapSession()'s "complete-profile" path),
+// which achieves the same outcome without an in-app destructive tool that
+// duplicated it. See BRAINS/SESSIONS.md for the reasoning.
 
 function summarizeChanges(entry: ActionLogEntry): string {
   if (entry.action === "created") return "Registered.";
   if (entry.action === "completed") return "Marked returned.";
   if (entry.action === "cancelled") return "Cancelled.";
   if (entry.action === "departed") return "Marked departed.";
-  if (!entry.changes || entry.changes.length === 0) return "Updated.";
+  if (!entry.changes || entry.changes.length === 0) {
+    return entry.action === "reset" ? "Local data cleared." : "Updated.";
+  }
   return entry.changes
     .map((c) => `${c.label}: ${c.old ?? "—"} → ${c.new ?? "—"}`)
     .join("; ");
 }
 
-// "registered"/"updated" cover owner/vehicle entries; the rest are
+// "registered"/"updated" cover owner/vehicle entries; "reset" is a
+// business-wide system entry (see entityTypeLabel below); the rest are
 // booking-only lifecycle events (see lib/repo/bookings.ts).
 function actionVerb(action: ActionLogEntry["action"]): string {
   switch (action) {
@@ -464,6 +427,8 @@ function actionVerb(action: ActionLogEntry["action"]): string {
       return "cancelled";
     case "departed":
       return "marked departed";
+    case "reset":
+      return "reset (local only — Cloud data untouched)";
     case "updated":
     default:
       return "updated";
@@ -473,6 +438,7 @@ function actionVerb(action: ActionLogEntry["action"]): string {
 function entityTypeLabel(entityType: ActionLogEntry["entity_type"]): string {
   if (entityType === "owner") return "Owner";
   if (entityType === "vehicle") return "Vehicle";
+  if (entityType === "system") return "System";
   return "Booking";
 }
 
@@ -663,6 +629,109 @@ function AccountSection({ onSignedOut }: { onSignedOut: () => void }) {
   );
 }
 
+// ROT024 — manual "Sync now" alongside the automatic hourly SyncRunner
+// poller (App.tsx). The privilege of manual sync is immediacy, not a
+// substitute for connectivity: this calls the exact same runOutboundSync()
+// the background poller uses, so it still needs the device to actually be
+// online to push anything — see its offline-result handling below.
+function SyncSection() {
+  const { settings } = useSettings();
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [offlineSince, setOfflineSince] = useState<string | null>(null);
+  const [pending, setPending] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [backgroundSyncActive, setBackgroundSyncActive] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  // Watches the same in-process singleton flag runOutboundSync() itself
+  // guards on (lib/repo/sync.ts) — so the button reflects (and disables
+  // during) the hourly SyncRunner poll too, not just its own click. A
+  // click that still somehow lands mid-poll is caught a second way, by
+  // outcome.skipped below — belt and suspenders, not two different guards.
+  useEffect(() => {
+    const id = setInterval(() => setBackgroundSyncActive(isSyncRunning()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function refresh() {
+    const db = await getDb();
+    const rows = await db.select<{ last_synced_at: string | null; offline_since: string | null }[]>(
+      "select last_synced_at, offline_since from sync_state where business_id = ?",
+      [currentBusinessId()],
+    );
+    setLastSyncedAt(rows[0]?.last_synced_at ?? null);
+    setOfflineSince(rows[0]?.offline_since ?? null);
+    setPending(await countPendingOutbox());
+  }
+
+  useEffect(() => {
+    refresh().catch(() => undefined);
+  }, []);
+
+  async function handleSyncNow() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const outcome = await runOutboundSync();
+      if (outcome.skipped) {
+        setResult("A sync is already running in the background — try again in a moment.");
+      } else if (outcome.offline) {
+        setResult("Couldn't reach Supabase — check your connection and try again.");
+      } else if (outcome.pushed === 0 && outcome.failed === 0) {
+        setResult("Already up to date.");
+      } else if (outcome.failed > 0) {
+        // Surface the actual rejection reason (e.g. an RLS/permission
+        // error) instead of just a count — a bare "X failed" gives no way
+        // to tell a real, recurring problem apart from an ordinary
+        // connectivity retry without opening dev tools.
+        const db = await getDb();
+        const sample = await db.select<{ entity_table: string; last_error: string | null }[]>(
+          "select entity_table, last_error from outbox where status = 'failed' order by id desc limit 1",
+        );
+        const detail = sample[0]?.last_error ? ` (${sample[0].entity_table}: ${sample[0].last_error})` : "";
+        setResult(
+          `Synced ${outcome.pushed} record${outcome.pushed === 1 ? "" : "s"}, ${outcome.failed} failed — will retry.${detail}`,
+        );
+      } else {
+        setResult(`Synced ${outcome.pushed} record${outcome.pushed === 1 ? "" : "s"}.`);
+      }
+      await refresh();
+    } catch (err) {
+      setResult(err instanceof Error ? err.message : "Sync failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+          {lastSyncedAt ? `Last synced ${formatDateTime(lastSyncedAt, settings)}` : "Not synced yet"}
+        </p>
+        <p className="mt-0.5 text-xs" style={{ color: "var(--text-muted)" }}>
+          {pending > 0 ? `${pending} record${pending === 1 ? "" : "s"} pending` : "Nothing pending"}
+          {offlineSince ? " — offline since last attempt" : ""}
+        </p>
+        {result && (
+          <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+            {result}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={handleSyncNow}
+        disabled={busy || backgroundSyncActive}
+        className="rounded-md px-3.5 py-2 text-sm font-medium disabled:opacity-60"
+        style={{ background: "var(--surface-2)", color: "var(--text-primary)", border: "0.5px solid var(--border-strong)" }}
+      >
+        {busy || backgroundSyncActive ? "Syncing…" : "Sync now"}
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsScreen({ onSignOut }: { onSignOut: () => void }) {
   const { settings, setSettings } = useSettings();
 
@@ -670,8 +739,13 @@ export default function SettingsScreen({ onSignOut }: { onSignOut: () => void })
     <div className="max-w-xl space-y-6">
       <div className="space-y-3">
         <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Account</h2>
-        <div className="rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
+        <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
           <AccountSection onSignedOut={onSignOut} />
+          <div className="pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
+            <div className="pt-3">
+              <SyncSection />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -850,8 +924,7 @@ export default function SettingsScreen({ onSignOut }: { onSignOut: () => void })
       <div className="space-y-3">
         <h2 className="text-base font-medium" style={{ color: "var(--text-primary)" }}>Developer</h2>
         <div className="space-y-4 rounded-md p-5" style={{ border: "0.5px solid var(--border)" }}>
-          <ResetTestData />
-          <FactoryReset />
+          <ClearStaleData />
         </div>
       </div>
 

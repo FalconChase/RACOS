@@ -488,42 +488,8 @@ export async function correctBookingPayment(id: string, patch: PaymentCorrection
   return updated;
 }
 
-// DEV-ONLY: wipes every booking — ongoing and history alike — for the current
-// business, so test data can be cleared without hand-deleting rows one at a
-// time. Vehicles, customers, and rate/location data are untouched. This also
-// frees up vehicles/customers that otherwise can't be deleted while a
-// booking (even a completed/cancelled one) still references them, since
-// bookings.vehicle_id/customer_id are NOT NULL foreign keys.
-export async function resetAllBookings(): Promise<{ deletedCount: number }> {
-  const db = await getDb();
-  const business_id = currentBusinessId();
-
-  const rows = await db.select<{ id: string }[]>(
-    "select id from bookings where business_id = ?",
-    [business_id],
-  );
-  const ids = rows.map((r) => r.id);
-
-  // payments.booking_id is a NOT NULL FK — clear first so it never blocks the
-  // bookings delete below, even though nothing in the app writes to payments
-  // yet.
-  await db.execute("delete from payments where business_id = ?", [business_id]);
-  await db.execute("delete from bookings where business_id = ?", [business_id]);
-
-  // Drop queued sync entries for the rows just wiped, so the (not yet built)
-  // sync worker never tries to push a delete/update for an id that no longer
-  // means anything locally.
-  for (const id of ids) {
-    await db.execute("delete from outbox where entity_table = 'bookings' and entity_id = ?", [id]);
-  }
-
-  // Vehicle status now follows booking state (see createBooking/markBookingReturned) —
-  // after wiping every booking, nothing should still read as "rented" with no
-  // booking left to justify it.
-  await db.execute(
-    "update vehicles set status = 'available', updated_at = ? where business_id = ? and status = 'rented'",
-    [new Date().toISOString(), business_id],
-  );
-
-  return { deletedCount: ids.length };
-}
+// resetAllBookings() was removed (this session) — see Settings' "Reset test
+// data" removal comment in SettingsScreen.tsx and BRAINS/RACOS.md ROD021
+// for the reasoning: a tool that lets an admin bulk-wipe real booking
+// history works against RACOS's transparency guarantees, even scoped to
+// local-only data with an audit log entry recording that a wipe happened.

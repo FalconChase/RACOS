@@ -166,6 +166,18 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0026_owner_login_code.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 27,
+            description: "sync_backfill_marker",
+            sql: include_str!("../migrations/0027_sync_backfill_marker.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 28,
+            description: "action_log_system_reset",
+            sql: include_str!("../migrations/0028_action_log_system_reset.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

@@ -4,6 +4,7 @@ import { countPendingOutbox } from "./lib/repo/outbox";
 import { ensureDefaultSeatingBands } from "./lib/repo/rateMatrix";
 import { SettingsProvider } from "./lib/settingsContext";
 import AutoDepartureRunner from "./components/AutoDepartureRunner";
+import SyncRunner from "./components/SyncRunner";
 import LoginScreen from "./screens/LoginScreen";
 import Sidebar from "./components/Sidebar";
 import HomeScreen from "./screens/HomeScreen";
@@ -105,6 +106,7 @@ function App() {
   return (
     <SettingsProvider>
     <AutoDepartureRunner />
+    <SyncRunner />
     <div className="flex h-screen print:h-auto print:block" style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}>
       <Sidebar active={tab} onSelect={goToTab} pendingSync={pendingSync} />
 

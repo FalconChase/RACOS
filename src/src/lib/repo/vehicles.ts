@@ -272,7 +272,7 @@ export async function deleteVehicle(id: string): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     if (message.toLowerCase().includes("foreign key")) {
       throw new Error(
-        "Cannot delete — this vehicle still has booking history (completed/cancelled) on file, and removing it would break those records. Clear booking history first (Settings > Reset test data), or mark this vehicle Retired instead of deleting it.",
+        "Cannot delete — this vehicle still has booking history (completed/cancelled) on file, and removing it would break those records. Mark this vehicle Retired instead of deleting it, so its history stays intact.",
       );
     }
     throw err;

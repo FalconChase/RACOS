@@ -92,13 +92,24 @@ export interface ActionLogChange {
 export interface ActionLogEntry {
   id: string;
   business_id: string;
-  entity_type: "owner" | "vehicle" | "booking";
+  // "system" covers business-wide admin actions that aren't about one
+  // specific owner/vehicle/booking row — currently just Clear stale test
+  // data (Settings > Developer). "Reset test data" and Factory reset were
+  // both removed (see BRAINS/RACOS.md ROD021): a tool letting an admin
+  // bulk-wipe this business's own real history undermines RACOS's
+  // transparency guarantees, even scoped to local data with an audit entry.
+  entity_type: "owner" | "vehicle" | "booking" | "system";
   entity_id: string;
   entity_label: string;
   // "completed"/"cancelled"/"departed" are booking-only (cancelBooking,
   // markBookingReturned, markBookingDeparted) — owner/vehicle records only
-  // ever produce "created"/"updated".
-  action: "created" | "updated" | "completed" | "cancelled" | "departed";
+  // ever produce "created"/"updated". "reset" is system-only (see
+  // entity_type above) — a bulk local-data wipe, always logged, never
+  // silent, and never pushed to Cloud as a delete (see
+  // clearStaleBusinessData — Cloud data a business already synced is
+  // untouched by this tool on principle, since it only ever clears rows
+  // that never belonged to this business's own Cloud data in the first place).
+  action: "created" | "updated" | "completed" | "cancelled" | "departed" | "reset";
   // Stored as JSON text in SQLite; parsed to ActionLogChange[] by the repo
   // layer before reaching the UI. Always null for the booking lifecycle
   // actions above — the action type itself says what happened, same as
