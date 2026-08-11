@@ -18,8 +18,9 @@ import RegistryScreen from "./screens/RegistryScreen";
 import SettlementsScreen from "./screens/SettlementsScreen";
 import ToolsScreen from "./screens/ToolsScreen";
 import MapScreen from "./screens/MapScreen";
+import AnalyticsScreen from "./screens/AnalyticsScreen";
 
-export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "tools" | "map" | "settings";
+export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "tools" | "map" | "analytics" | "settings";
 
 type AuthState =
   | { status: "checking" }
@@ -158,6 +159,7 @@ function App() {
               {tab === "settlements" && <SettlementsScreen />}
               {tab === "tools" && <ToolsScreen />}
               {tab === "map" && <MapScreen />}
+              {tab === "analytics" && <AnalyticsScreen />}
               {tab === "settings" && <SettingsScreen onSignOut={handleSignedOut} />}
             </>
           )}

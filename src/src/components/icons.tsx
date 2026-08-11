@@ -237,3 +237,12 @@ export function MapIcon({ size = 18, strokeWidth = 2, className }: IconProps) {
     </svg>
   );
 }
+
+export function BarChartIcon({ size = 18, strokeWidth = 2, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} strokeWidth={strokeWidth} className={className}>
+      <path d="M4 20V10M11 20V4M18 20v-7" />
+      <path d="M3 20h18" />
+    </svg>
+  );
+}

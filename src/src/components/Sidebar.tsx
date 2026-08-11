@@ -13,6 +13,7 @@ import {
   MapIcon,
   ToolIcon,
   CloudUpIcon,
+  BarChartIcon,
 } from "./icons";
 import type { Tab } from "../App";
 
@@ -30,6 +31,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
   // clickable and shows a real, working map — just no vehicle pins yet, since
   // the desktop app has no Supabase read access wired up (blocked on ROT007).
   { id: "map", label: "Map", icon: MapIcon },
+  { id: "analytics", label: "Analytics", icon: BarChartIcon },
 ];
 
 // Shown in the reference design but not built yet — kept visible (dimmed,

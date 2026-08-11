@@ -2,7 +2,7 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-11 (SES017), cross-checked directly against all local migration files through 0047 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below).
+Last compiled: 2026-08-11 (SES018), cross-checked directly against all local migration files through 0049 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below; `destination_geocodes`/`overtime_waived_at` are local-only, ROD026, no Cloud counterpart planned).
 
 ---
 
@@ -58,7 +58,8 @@ Last compiled: 2026-08-11 (SES017), cross-checked directly against all local mig
 | actual_return_at | text \| null | null = still active/rented, even if past due |
 | actual_departure_at | text \| null | null = still pending, even if past scheduled ETD |
 | resolved_rate | text \| null | rate locked in at creation time (see Formulas) |
-| additional_payment | text \| null | overtime collected, set only via Mark Returned when late |
+| additional_payment | text \| null | overtime collected, set only via Mark Returned when late (or via Outstanding/Settlements' settle actions, see Formulas — additive/capped, ROD014) |
+| overtime_waived_at | text (ISO) \| null | SES018, migration 0048 — set only by the "Final settlement" write-off action (`waiveOvertimeBalance()`); marks overtime fully settled regardless of whether `additional_payment` ever reached the expected amount. Non-null = `isOvertimeUnsettled()` returns false (ROD027) |
 | created_at, updated_at | text (ISO) | |
 
 **booking_legs** (Local, SES017 migration 0042) — chained additional stops after the primary destination, for a multi-destination booking. Only ever created alongside the booking itself (`createBooking`) — no add/edit/remove path for an already-saved booking yet.
@@ -75,7 +76,7 @@ Last compiled: 2026-08-11 (SES017), cross-checked directly against all local mig
 **vehicles**, **customers** — referenced for plate number / customer name display only (see their own tabs below for full columns).
 **app_settings** — `duration_display`, `show_expected_payment`, `fuelUnit` (bars/liters) affect how this screen describes/reveals duration, expected payment, and the inline fuel entry field.
 
-**New rental** (SES017 full rebuild) — opens as a popup dialog (not an inline form), exitable only via Cancel (confirms first if the form is dirty). A 5-step wizard, strictly Next/Back on first pass through: **Profile** (customer picker or new-customer inline; Contact No./Address always editable, bidirectionally writes back to the `customers` row — see Customers section above) → **Vehicle** (vehicle picker + optional inline Fuel level/Odometer, each capped by the selected vehicle's `fuel_max_level` and written to `fuel_level_entries`/`odometer_readings` at save time, `reading_at` = save time not the rental's own start) → **Destination** (province-then-city, quick-pick chips, primary + chained `booking_legs`) → **Payment** (`payment_status`, amount, Purpose) → **Summary** (read-only recap, the only step with the real Save button). Once a step has been reached in the current session, its tab becomes clickable/accent-colored for jumping straight back (or forward, within reached range) to review — unreached steps stay inert. The "This booking already happened" ArrivalDialog fires only from an actual Save click, never from Next navigation (RC015/RC016, FX015/FX016).
+**New rental** (SES017 full rebuild) — opens as a popup dialog (not an inline form), exitable only via Cancel (confirms first if the form is dirty). A 5-step wizard, strictly Next/Back on first pass through: **Profile** (customer picker or new-customer inline; Contact No./Address always editable, bidirectionally writes back to the `customers` row — see Customers section above) → **Vehicle** (vehicle picker + optional inline Fuel level/Odometer, each capped by the selected vehicle's `fuel_max_level` and written to `fuel_level_entries`/`odometer_readings` at save time, `reading_at` = save time not the rental's own start) → **Destination** (province-then-city, quick-pick chips, primary + chained `booking_legs`) → **Payment** (`payment_status`, amount — **required**, never blank, SES018/ROD030 — Purpose) → **Summary** (read-only recap, the only step with the real Save button). Once a step has been reached in the current session, its tab becomes clickable/accent-colored for jumping straight back (or forward, within reached range) to review — unreached steps stay inert. The "This booking already happened" ArrivalDialog fires only from an actual Save click, never from Next navigation (RC015/RC016, FX015/FX016).
 
 ---
 
@@ -177,6 +178,8 @@ Every edit (and creation) is written to **action_logs**:
 
 Contact No. and Address are also editable directly from the New rental wizard's Profile step (SES017) — auto-populated from the selected existing customer but always overwritable, or filled inline for a new one; an edit there writes back to this table via `updateCustomerPhone()`/`updateCustomerAddress()` at booking-save time (bidirectional, no separate trip to this tab required).
 
+**Outstanding sub-tab** (SES018, `CustomerOutstandingTab.tsx`) — no new table; a flat, oldest-first list of every booking with an unsettled overtime balance (`isOvertimeUnsettled()`) or a `payment_status = 'receivable'` balance, drawn from the same `bookings`/`vehicles`/`business_profile`/rate-matrix tables as Settlements. "Settle overtime" and "Mark as paid" call the exact same shared logic as Settlements — `lib/overtimeSettlement.ts` (`computeOvertimeSettlement`) and `components/OvertimeSettleForm.tsx`/`WaiveOvertimeButton` — so the two screens can never disagree on what's still owed. Both actions require a `ConfirmDialog` confirmation before writing (SES018).
+
 ---
 
 ## Rate Matrix
@@ -217,7 +220,7 @@ Unique on (city_id, seating_band_id).
 
 ## Settlements — Records
 
-Reads **bookings** (payment_amount, expected_payment, resolved_rate, additional_payment, actual_return_at/actual_departure_at — see Rentals section for full shape) plus **vehicles**, **customers**, **owners** for display, and **rate_matrix/seating_bands/custom_rates/business_profile/provinces** to recompute a rate live for any booking created before `resolved_rate` existed. See Formulas for the payment-correction rule (ROD014).
+Reads **bookings** (payment_amount, expected_payment, resolved_rate, additional_payment, overtime_waived_at, actual_return_at/actual_departure_at — see Rentals section for full shape) plus **vehicles**, **customers**, **owners** for display, and **rate_matrix/seating_bands/custom_rates/business_profile/provinces** to recompute a rate live for any booking created before `resolved_rate` existed. See Formulas for the payment-correction rule (ROD014) and the partial/final overtime settlement rule (ROD027). "Mark as paid" and Save (payment correction) both go through `ConfirmDialog` before writing (SES018). Shares its settle logic 1:1 with Customers > Outstanding (`overtimeSettlement.ts`).
 
 ---
 
@@ -318,7 +321,39 @@ Owners' Portal (`portal/src/components/EntriesTab.tsx`) mirrors Odometer Log / G
 | created_at | timestamptz | |
 RLS: select-only via `business_id = current_business_id()` — no insert/update/delete for authenticated users; only the `gps-ingest` Edge Function (service key) writes here.
 
-**gps_location_entries + gps_location_labels** (ROP011, SES016) — selecting one specific vehicle plots that vehicle's logged location history (see Tools > Entries above) as a numbered trail: markers + connecting polyline, sorted chronologically, popup per pin (time/location/logged by/parked duration), optional From/To date filter (defaults to full history). This is the manual/self-reported signal, entirely separate from `vehicle_locations`' live GPS feed above — the two aren't cross-referenced against each other yet.
+**gps_location_entries + gps_location_labels** (ROP011, SES016) — selecting one specific vehicle plots that vehicle's logged location history (see Tools > Entries above) as a numbered trail: markers + connecting polyline, sorted chronologically, popup per pin (time/location/logged by/parked duration), optional From/To date filter (defaults to full history). This is the manual/self-reported signal, entirely separate from `vehicle_locations`' live GPS feed above.
+
+**destination_geocodes** (Local, SES018, migration 0049) — forward-geocode cache, PK `(business_id, location_key)` where `location_key` = `buildLocationKey(province_id, municipality_id)`. Local-only, never synced to Cloud (ROD026).
+| Column | Type | Notes |
+|---|---|---|
+| business_id, location_key | text PK/PK | |
+| province_id, municipality_id | text FK/FK \| null | |
+| display_name | text | Nominatim's resolved label |
+| latitude, longitude | real | |
+| raw_response | text \| null | full Nominatim JSON, kept for debugging |
+| resolved_at | text (ISO) | |
+
+**Destination history** (Map toggle, SES018) — plots one purple teardrop pin per unique realized (active/completed) booking destination, sized/labelled by visit count; resolved lazily via `resolveDestinationGeocodes()` (paced ~1.1s/request against Nominatim, `countrycodes=ph`, progress UI while resolving). `lib/destinationHistory.ts` (`buildDestinationHistory`) does the aggregation, optionally scoped to one vehicle.
+
+**HQ pin** (Map, SES018) — a permanent gold-star marker (always visible, independent of the Destination-history toggle) at `business_profile.hq_province_id/hq_city_id`'s geocoded location, resolved through the same `destination_geocodes` cache (ROD029, no separate precise-pin mechanism). `lib/hqDistance.ts` (`computeHqDisplacement`) appends a "N km from HQ (Tier X)" line to destination-history and booking-target popups, using `haversineKm` (`lib/geo.ts`) + the existing `computeTier` (Rate Matrix).
+
+**Compare booking vs GPS Log** (Map dropdown, SES018) — pick one of the selected vehicle's bookings to see an orange bullseye pin at its (on-demand geocoded) destination plus green-circled highlights around GPS Log points that fall inside that booking's actual window; backed by `lib/bookingGpsCorroboration.ts` (see Formulas, ROD028).
+
+---
+
+## Analytics (SES018)
+
+No new tables — a read-only, per-vehicle computed view (vehicle picker + date range) over data that already exists elsewhere.
+
+**Summary/Revenue/Utilization/Overtime** (`lib/vehicleAnalytics.ts`, `buildVehicleAnalytics`) — reads **bookings** (payment_amount, expected_payment, additional_payment, overtime_waived_at, actual timestamps) filtered to the selected vehicle + date range: booking/realized-booking counts, total collected/expected, outstanding overtime/receivable, avg revenue per booking, total/avg rented hours, overtime rate + unsettled count, revenue and booking counts bucketed by month. Charted via the new hand-rolled `components/MiniChart.tsx` (`MiniLineChart`/`MiniBarChart`/`EmptyChart` — SVG, no charting-library dependency, same precedent as Tools > Car Activity's Gantt chart).
+
+**Top destinations & distance from HQ** — reads **destination_geocodes** (resolved lazily the same as Map's Destination history) + `lib/hqDistance.ts` (`computeHqDisplacement`): per-destination booking count, distance from HQ (haversine), and Tier; plus avg/farthest summary stats.
+
+**GPS corroboration** — reads **gps_location_entries**/**gps_location_labels** for the selected vehicle, runs every filtered booking through `lib/bookingGpsCorroboration.ts` (`buildBookingCorroboration`/`summarizeCorroboration`, see Formulas/ROD028): an aggregate unverified/corroborated/possible-mismatch summary plus a flagged-bookings list.
+
+**GPS trail — distance & speed** — reads **gps_location_entries** for the selected vehicle/date range, `lib/gpsTrailMetrics.ts` (`buildTrailMetrics`, see Formulas): total/per-segment distance, avg/max speed, moving time — shown alongside the logged **mileage_entries** total for a side-by-side comparison (no automatic reconciliation between the two yet).
+
+**Mileage log / Odometer readings** — reads **mileage_entries** / **odometer_readings** directly (same tables as Tools > Entries), charted by date.
 
 ---
 
@@ -455,3 +490,11 @@ computeDateVariance(period_end, recorded_at) // day-granularity — mileage_entr
 Both return a tone (`live` ~0 gap / `late` negative gap / `future`, DB-blocked but defensively handled) + a label ("Logged same day", "Logged Nd late", etc.) — never blocks a save, just surfaces the gap as visible signal.
 
 **Mileage cross-check (ROP011, SES016, `EntriesReportsTab.buildSegments()`)**: for each consecutive pair of odometer readings on a vehicle, `odometerDeltaKm = toReading.reading_km - fromReading.reading_km`, compared against the sum of any `mileage_entries` whose period overlaps that window. Flagged "Odometer decreased" if the delta is negative; flagged "Mismatch" if `abs(odometerDeltaKm - mileageSum) > max(30, odometerDeltaKm * 0.2)` — whichever is larger of a flat 30km floor or 20% of the delta, since a fixed gap means very different things on a short trip vs. a long one.
+
+**Overtime settlement, partial vs. final (SES018, ROD027, `lib/overtimeSettlement.ts`)**: `computeOvertimeSettlement()` returns `{settled, overtimeHours, overtimeExpected, currentOvertime, amountOwed, waived}` — `settled` is true when either `additional_payment >= overtimeExpected` (fully collected) OR `overtime_waived_at` is non-null (written off). Corrections to `additional_payment` stay additive-only/capped at `overtimeExpected` (ROD014, unchanged) via the normal settle form; the separate `WaiveOvertimeButton` (typed "WRITE OFF" confirmation) is the only path that sets `overtime_waived_at`, marking `settled = true`/`waived = true` without touching the real collected figure. `isOvertimeUnsettled(s) = !s.settled`.
+
+**HQ displacement (SES018, ROD026/ROD029, `lib/hqDistance.ts`)**: `hqLocationKey(profile)` builds the same `location_key` shape as any other `destination_geocodes` row from `hq_province_id`/`hq_city_id` — no separate table. `computeHqDisplacement(hqGeocode, destinationGeocode, hqProvinceId, provinces)` returns `{distanceKm: haversineKm(...), tier: computeTier(destination_province_id, hqProvinceId, provinces)}` — the existing Tier formula (above) unchanged, distance is a new straight-line figure alongside it, not a replacement.
+
+**GPS trail distance & speed (SES018, `lib/gpsTrailMetrics.ts`)**: for each consecutive pair of a vehicle's `gps_location_entries` (sorted by `reading_at`), `distanceKm = haversineKm(from, to)`; `elapsedMinutes = raw timestamp gap`; `movingMinutes = max(0, elapsedMinutes - from.duration_minutes)` (the earlier point's own logged parking time is excluded from travel time — a long gap is understood as a long parking stretch, computed regardless of how large it is, never discarded); `speedKmh = movingMinutes > 0 ? distanceKm / (movingMinutes/60) : null`.
+
+**Booking vs GPS Log corroboration (SES018, ROD028, `lib/bookingGpsCorroboration.ts`)**: window = the booking's actual departure/return timestamps (falls back to scheduled start/end if actuals are null); matches any `gps_location_entries` for the same `vehicle_id` whose `reading_at` falls inside that window; status is `possible_mismatch` if a matched entry's resolved label text doesn't contain the booking's destination name, `corroborated` if at least one match's label does, `unverified` if no GPS entries fall in the window at all. Text-only — no distance/geocoding math in this check, since GPS Log entries carry no `booking_id` to begin with (ROD028).

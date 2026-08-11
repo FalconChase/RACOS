@@ -7,14 +7,19 @@ import { listGpsLocationLabels } from "../lib/repo/gpsLocationLabels";
 import { listBookings } from "../lib/repo/bookings";
 import { listAllBookingLegs } from "../lib/repo/bookingLegs";
 import { listCustomers } from "../lib/repo/customers";
-import { listMunicipalities, listProvinces } from "../lib/repo/locations";
-import { listDestinationGeocodes, resolveDestinationGeocodes } from "../lib/repo/destinationGeocodes";
+import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
+import { listDestinationGeocodes, resolveDestinationGeocodes, geocodeDestination, buildLocationKey } from "../lib/repo/destinationGeocodes";
 import { buildDestinationHistory, type DestinationHistoryPoint } from "../lib/destinationHistory";
+import { buildBookingCorroboration, type BookingCorroboration } from "../lib/bookingGpsCorroboration";
+import { hqLocationKey, computeHqDisplacement } from "../lib/hqDistance";
+import { bookingRef } from "../lib/bookingRef";
+import { destinationLabel } from "../lib/destinationLabel";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
 import type {
   Booking,
   BookingLeg,
+  BusinessProfile,
   Customer,
   DestinationGeocode,
   GpsLocationEntry,
@@ -81,6 +86,36 @@ function destinationPinIcon(visitCount: number): L.DivIcon {
   });
 }
 
+// Headquarters — the origin/datum every displacement figure is measured
+// from (see lib/hqDistance.ts). A star, not a teardrop or bullseye, so it
+// reads as "home base" at a glance among the other two pin styles.
+function hqPinIcon(): L.DivIcon {
+  return L.divIcon({
+    className: "",
+    html: `
+      <div style="position:relative;width:30px;height:30px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5));">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="#EAB308" stroke="white" stroke-width="1.5">
+          <path d="M12 2 14.9 8.6 22 9.3 16.7 14 18.2 21 12 17.3 5.8 21 7.3 14 2 9.3 9.1 8.6Z"/>
+        </svg>
+      </div>
+    `,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+  });
+}
+
+// The selected booking's destination, for Booking vs GPS comparison — a
+// bullseye rather than a teardrop so it reads as "the target" next to the
+// highlighted GPS points, not another entry in the destination-history layer.
+function bookingTargetIcon(): L.DivIcon {
+  return L.divIcon({
+    className: "",
+    html: `<div style="width:26px;height:26px;border-radius:50%;background:#F97316;border:3px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.5);"></div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
 export default function MapScreen() {
   const { settings } = useSettings();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -88,6 +123,8 @@ export default function MapScreen() {
   const historyMarkersRef = useRef<L.Marker[]>([]);
   const historyLineRef = useRef<L.Polyline | null>(null);
   const destinationMarkersRef = useRef<L.Marker[]>([]);
+  const comparisonMarkersRef = useRef<L.Layer[]>([]);
+  const hqMarkerRef = useRef<L.Marker | null>(null);
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(ALL_VEHICLES);
@@ -98,24 +135,80 @@ export default function MapScreen() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  // Destination history — off by default (it's the heavier, business-wide
-  // query + first-time geocoding pass), loaded lazily the first time it's
-  // switched on.
-  const [showDestinationHistory, setShowDestinationHistory] = useState(false);
-  const [destinationDataLoaded, setDestinationDataLoaded] = useState(false);
+  // Booking/destination reference data — bookings, legs, customers,
+  // provinces, municipalities, the geocode cache — loaded once on mount,
+  // needed unconditionally now (both Destination history and Booking vs
+  // GPS below depend on it), not just when Destination history is toggled
+  // on.
+  const [bookingDataLoaded, setBookingDataLoaded] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [bookingLegs, setBookingLegs] = useState<BookingLeg[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [geocodes, setGeocodes] = useState<Record<string, DestinationGeocode>>({});
-  const [destinationLoading, setDestinationLoading] = useState(false);
+  const [bookingDataError, setBookingDataError] = useState<string | null>(null);
+
+  // Headquarters — the origin/datum for every displacement figure (see
+  // lib/hqDistance.ts). Resolved once, on demand, the same single-lookup
+  // way the selected booking's destination is below — it's one fixed
+  // point, not a paced batch.
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfile | null>(null);
+  const [hqGeocodeLoading, setHqGeocodeLoading] = useState(false);
+  const [hqGeocodeError, setHqGeocodeError] = useState<string | null>(null);
+
+  // Destination history layer — off by default, since resolving every
+  // not-yet-cached destination is the heavier, paced Nominatim pass.
+  const [showDestinationHistory, setShowDestinationHistory] = useState(false);
   const [destinationError, setDestinationError] = useState<string | null>(null);
   const [resolveProgress, setResolveProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Booking vs GPS Log — pick one of the selected vehicle's realized
+  // bookings and see its booked destination pinned next to whichever GPS
+  // Log entries fall inside its actual window (see
+  // lib/bookingGpsCorroboration.ts).
+  const [selectedBookingId, setSelectedBookingId] = useState<string>("");
+  const [bookingGeocodeLoading, setBookingGeocodeLoading] = useState(false);
+  const [bookingGeocodeError, setBookingGeocodeError] = useState<string | null>(null);
 
   useEffect(() => {
     listVehicles().then(setVehicles);
   }, []);
+
+  // Same booking/reference data Destination history uses, just loaded
+  // unconditionally now — Booking vs GPS needs the vehicle's booking list
+  // even before Destination history is ever switched on.
+  useEffect(() => {
+    setBookingDataError(null);
+    Promise.all([
+      listBookings(),
+      listAllBookingLegs(),
+      listCustomers(),
+      listProvinces(),
+      listMunicipalities(),
+      listDestinationGeocodes(),
+      getBusinessProfile(),
+    ])
+      .then(([b, legs, c, p, m, cachedGeocodes, profile]) => {
+        setBookings(b);
+        setBookingLegs(legs);
+        setCustomers(c);
+        setProvinces(p);
+        setMunicipalities(m);
+        setGeocodes(cachedGeocodes);
+        setBusinessProfile(profile);
+        setBookingDataLoaded(true);
+      })
+      .catch((err: unknown) => {
+        setBookingDataError(err instanceof Error ? err.message : "Couldn't load booking data.");
+      });
+  }, []);
+
+  // Picking a different vehicle invalidates whatever booking was selected
+  // for comparison — it belonged to the previous vehicle's list.
+  useEffect(() => {
+    setSelectedBookingId("");
+  }, [selectedVehicleId]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -137,6 +230,50 @@ export default function MapScreen() {
       mapRef.current = null;
     };
   }, []);
+
+  const hqKey = hqLocationKey(businessProfile);
+  const hqGeocode = hqKey ? geocodes[hqKey] : null;
+
+  // Resolves HQ's coordinates on demand, once — a single fixed lookup, not
+  // the paced batch Destination history runs for every past destination.
+  useEffect(() => {
+    if (!businessProfile?.hq_province_id || hqGeocode) return;
+    let cancelled = false;
+    setHqGeocodeLoading(true);
+    setHqGeocodeError(null);
+    geocodeDestination(businessProfile.hq_province_id, businessProfile.hq_city_id, provinces, municipalities)
+      .then((geocode) => {
+        if (cancelled) return;
+        setGeocodes((prev) => ({ ...prev, [geocode.location_key]: geocode }));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setHqGeocodeError(err instanceof Error ? err.message : "Couldn't resolve HQ's location.");
+      })
+      .finally(() => {
+        if (!cancelled) setHqGeocodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessProfile, hqGeocode, provinces, municipalities]);
+
+  // Renders the HQ pin — always shown once resolved, independent of every
+  // other toggle here, since it's a fixed reference point rather than a
+  // filtered layer.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    hqMarkerRef.current?.remove();
+    hqMarkerRef.current = null;
+
+    if (!hqGeocode) return;
+
+    hqMarkerRef.current = L.marker([hqGeocode.latitude, hqGeocode.longitude], { icon: hqPinIcon(), zIndexOffset: 1000 })
+      .addTo(map)
+      .bindPopup(`<strong>Headquarters</strong><br/>${hqGeocode.display_name}`);
+  }, [hqGeocode]);
 
   // Load this vehicle's logged location history whenever the selection
   // changes. Cleared entirely for "All Vehicles" — plotting every
@@ -206,43 +343,13 @@ export default function MapScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredHistory, labels, settings]);
 
-  // Loads everything Destination history needs, once, the first time it's
-  // switched on — bookings/legs/customers/provinces/municipalities are all
-  // business-wide, unlike the per-vehicle GPS trail above.
-  useEffect(() => {
-    if (!showDestinationHistory || destinationDataLoaded) return;
-    setDestinationLoading(true);
-    setDestinationError(null);
-    Promise.all([
-      listBookings(),
-      listAllBookingLegs(),
-      listCustomers(),
-      listProvinces(),
-      listMunicipalities(),
-      listDestinationGeocodes(),
-    ])
-      .then(([b, legs, c, p, m, cachedGeocodes]) => {
-        setBookings(b);
-        setBookingLegs(legs);
-        setCustomers(c);
-        setProvinces(p);
-        setMunicipalities(m);
-        setGeocodes(cachedGeocodes);
-        setDestinationDataLoaded(true);
-      })
-      .catch((err: unknown) => {
-        setDestinationError(err instanceof Error ? err.message : "Couldn't load destination history.");
-      })
-      .finally(() => setDestinationLoading(false));
-  }, [showDestinationHistory, destinationDataLoaded]);
-
   // Memoized so this only rebuilds when the underlying data or vehicle
   // filter actually changes — not on every unrelated re-render (typing in
   // the date filter, etc.), which would otherwise tear down and rebuild
   // every destination marker (closing any open popup) each keystroke.
   const destinationPoints: DestinationHistoryPoint[] = useMemo(
     () =>
-      destinationDataLoaded
+      bookingDataLoaded
         ? buildDestinationHistory(
             bookings,
             bookingLegs,
@@ -253,7 +360,7 @@ export default function MapScreen() {
             selectedVehicleId === ALL_VEHICLES ? undefined : selectedVehicleId,
           )
         : [],
-    [destinationDataLoaded, bookings, bookingLegs, customers, vehicles, provinces, municipalities, selectedVehicleId],
+    [bookingDataLoaded, bookings, bookingLegs, customers, vehicles, provinces, municipalities, selectedVehicleId],
   );
 
   // Resolves whatever destinations aren't cached yet, once the aggregate
@@ -312,9 +419,17 @@ export default function MapScreen() {
         .map((v) => `${v.ref} — ${v.customerLabel} (${v.vehicleLabel}), ${formatDateTime(v.date, settings)}`)
         .join("<br/>");
       const more = point.visits.length > 20 ? `<br/>+${point.visits.length - 20} more` : "";
+      const hqLine =
+        hqGeocode && businessProfile?.hq_province_id
+          ? (() => {
+              const d = computeHqDisplacement(hqGeocode, geocode, businessProfile.hq_province_id as string, provinces);
+              return `${d.distanceKm.toFixed(0)} km from HQ${d.tier != null ? ` (Tier ${d.tier})` : ""}<br/><br/>`;
+            })()
+          : "";
       const popup = `
         <strong>${point.label}</strong><br/>
-        ${point.visits.length} booking${point.visits.length === 1 ? "" : "s"}<br/><br/>
+        ${point.visits.length} booking${point.visits.length === 1 ? "" : "s"}<br/>
+        ${hqLine}
         ${visitRows}${more}
       `;
       return L.marker([geocode.latitude, geocode.longitude], { icon: destinationPinIcon(point.visits.length) })
@@ -330,7 +445,112 @@ export default function MapScreen() {
       map.fitBounds(bounds.pad(0.2));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showDestinationHistory, destinationPoints, geocodes, settings]);
+  }, [showDestinationHistory, destinationPoints, geocodes, settings, hqGeocode, businessProfile, provinces]);
+
+  // This vehicle's realized (active/completed) bookings — the only ones
+  // Booking vs GPS can say anything about, same set the corroboration
+  // helper itself only computes for.
+  const vehicleBookingOptions = useMemo(
+    () =>
+      selectedVehicleId === ALL_VEHICLES
+        ? []
+        : bookings
+            .filter((b) => b.vehicle_id === selectedVehicleId && (b.status === "active" || b.status === "completed"))
+            .sort((a, b) => new Date(b.start_date).getTime() - new Date(a.start_date).getTime()),
+    [bookings, selectedVehicleId],
+  );
+
+  const selectedBooking = bookings.find((b) => b.id === selectedBookingId) ?? null;
+
+  // Uses the vehicle's full GPS history (`history`, not the date-filtered
+  // `filteredHistory`) — the booking's own window is the relevant range
+  // here, independent of whatever date filter the trail layer above has set.
+  const corroboration: BookingCorroboration | null = useMemo(
+    () => (selectedBooking ? buildBookingCorroboration(selectedBooking, history, labels, provinces, municipalities) : null),
+    [selectedBooking, history, labels, provinces, municipalities],
+  );
+
+  const selectedBookingLocationKey = selectedBooking?.destination_province_id
+    ? buildLocationKey(selectedBooking.destination_province_id, selectedBooking.destination_city_id)
+    : null;
+  const selectedBookingGeocode = selectedBookingLocationKey ? geocodes[selectedBookingLocationKey] : null;
+
+  // Resolves the selected booking's destination on demand — a single
+  // lookup, not the paced batch Destination history runs, since this is
+  // one specific place the person just asked to compare, not "everything".
+  useEffect(() => {
+    if (!selectedBooking || !selectedBooking.destination_province_id || selectedBookingGeocode) return;
+    let cancelled = false;
+    setBookingGeocodeLoading(true);
+    setBookingGeocodeError(null);
+    geocodeDestination(selectedBooking.destination_province_id, selectedBooking.destination_city_id, provinces, municipalities)
+      .then((geocode) => {
+        if (cancelled) return;
+        setGeocodes((prev) => ({ ...prev, [geocode.location_key]: geocode }));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setBookingGeocodeError(err instanceof Error ? err.message : "Couldn't resolve this destination.");
+      })
+      .finally(() => {
+        if (!cancelled) setBookingGeocodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBooking, selectedBookingGeocode, provinces, municipalities]);
+
+  // Redraw the comparison layer — the booked-destination pin plus a
+  // highlight ring around whichever GPS trail markers actually corroborate
+  // it — whenever the selected booking or what's known about it changes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    comparisonMarkersRef.current.forEach((m) => m.remove());
+    comparisonMarkersRef.current = [];
+
+    if (!selectedBooking) return;
+
+    const layers: L.Layer[] = [];
+
+    if (selectedBookingGeocode) {
+      const hqLine =
+        hqGeocode && businessProfile?.hq_province_id
+          ? (() => {
+              const d = computeHqDisplacement(hqGeocode, selectedBookingGeocode, businessProfile.hq_province_id as string, provinces);
+              return `<br/>${d.distanceKm.toFixed(0)} km from HQ${d.tier != null ? ` (Tier ${d.tier})` : ""}`;
+            })()
+          : "";
+      const popup = `<strong>Booked destination</strong><br/>${destinationLabel(selectedBooking, provinces, municipalities)}${hqLine}`;
+      layers.push(
+        L.marker([selectedBookingGeocode.latitude, selectedBookingGeocode.longitude], { icon: bookingTargetIcon() })
+          .addTo(map)
+          .bindPopup(popup),
+      );
+    }
+
+    const matchedWithCoords = (corroboration?.matchedEntries ?? []).filter((e) => e.latitude != null && e.longitude != null);
+    for (const entry of matchedWithCoords) {
+      layers.push(
+        L.circleMarker([entry.latitude as number, entry.longitude as number], {
+          radius: 14,
+          color: "#22C55E",
+          weight: 3,
+          fill: false,
+        }).addTo(map),
+      );
+    }
+
+    comparisonMarkersRef.current = layers;
+
+    const boundsPoints: [number, number][] = [];
+    if (selectedBookingGeocode) boundsPoints.push([selectedBookingGeocode.latitude, selectedBookingGeocode.longitude]);
+    for (const entry of matchedWithCoords) boundsPoints.push([entry.latitude as number, entry.longitude as number]);
+    if (boundsPoints.length > 0) {
+      map.fitBounds(L.latLngBounds(boundsPoints).pad(0.3));
+    }
+  }, [selectedBooking, selectedBookingGeocode, corroboration, provinces, municipalities, hqGeocode, businessProfile]);
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const resolvedDestinationCount = destinationPoints.filter((p) => geocodes[p.locationKey]).length;
@@ -426,13 +646,71 @@ export default function MapScreen() {
         </label>
       </div>
 
+      {selectedVehicleId !== ALL_VEHICLES && (
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium" style={{ color: "var(--text-secondary)" }}>
+              Compare booking vs GPS Log
+            </label>
+            <select
+              value={selectedBookingId}
+              onChange={(e) => setSelectedBookingId(e.target.value)}
+              className="rounded-md px-3 py-2 text-sm"
+              style={{ ...selectStyle, minWidth: 260 }}
+            >
+              <option value="">None</option>
+              {vehicleBookingOptions.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {bookingRef(b.id)} — {formatDateTime(b.start_date, settings)} — {destinationLabel(b, provinces, municipalities)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {selectedBooking && (
+            <span
+              className="text-sm"
+              style={{
+                color:
+                  bookingGeocodeLoading || !corroboration
+                    ? "var(--text-muted)"
+                    : corroboration.status === "corroborated"
+                      ? "var(--text-success)"
+                      : corroboration.status === "possible_mismatch"
+                        ? "var(--text-danger)"
+                        : "var(--text-warning)",
+              }}
+            >
+              {bookingGeocodeLoading
+                ? "Resolving booked destination…"
+                : bookingGeocodeError
+                  ? bookingGeocodeError
+                  : corroboration?.status === "corroborated"
+                    ? `Corroborated — ${corroboration.matchedEntries.length} matching GPS Log entr${corroboration.matchedEntries.length === 1 ? "y" : "ies"}.`
+                    : corroboration?.status === "possible_mismatch"
+                      ? `Possible mismatch — ${corroboration.matchedEntries.length} GPS Log entr${corroboration.matchedEntries.length === 1 ? "y" : "ies"} logged, none mention the booked destination.`
+                      : "Unverified — no GPS Log entries logged during this booking's window."}
+            </span>
+          )}
+        </div>
+      )}
+
       {historyError && (
         <p className="text-sm" style={{ color: "var(--text-danger)" }}>{historyError}</p>
+      )}
+      {bookingDataError && (
+        <p className="text-sm" style={{ color: "var(--text-danger)" }}>{bookingDataError}</p>
+      )}
+      {hqGeocodeLoading && (
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>Resolving HQ's location…</p>
+      )}
+      {hqGeocodeError && (
+        <p className="text-sm" style={{ color: "var(--text-danger)" }}>{hqGeocodeError}</p>
       )}
 
       {showDestinationHistory && (
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-          {destinationLoading
+          {!bookingDataLoaded
             ? "Loading bookings…"
             : resolveProgress
               ? `Resolving locations… ${resolveProgress.done}/${resolveProgress.total}`
