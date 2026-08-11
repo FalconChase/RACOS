@@ -1,12 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listGpsLocationEntries } from "../lib/repo/gpsLocationEntries";
 import { listGpsLocationLabels } from "../lib/repo/gpsLocationLabels";
+import { listBookings } from "../lib/repo/bookings";
+import { listAllBookingLegs } from "../lib/repo/bookingLegs";
+import { listCustomers } from "../lib/repo/customers";
+import { listMunicipalities, listProvinces } from "../lib/repo/locations";
+import { listDestinationGeocodes, resolveDestinationGeocodes } from "../lib/repo/destinationGeocodes";
+import { buildDestinationHistory, type DestinationHistoryPoint } from "../lib/destinationHistory";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
-import type { Vehicle, GpsLocationEntry, GpsLocationLabel } from "../lib/types";
+import type {
+  Booking,
+  BookingLeg,
+  Customer,
+  DestinationGeocode,
+  GpsLocationEntry,
+  GpsLocationLabel,
+  Municipality,
+  Province,
+  Vehicle,
+} from "../lib/types";
 
 // Preparatory shell for live fleet tracking (see BRAINS/PLANS.md ROP006) —
 // the desktop app has no live-position feed yet. What it does have,
@@ -14,6 +30,13 @@ import type { Vehicle, GpsLocationEntry, GpsLocationLabel } from "../lib/types";
 // Entries (ROP011). Selecting a vehicle here plots that history as a
 // numbered trail — the same "corroborating signal" data, just viewed on
 // the map instead of as a list.
+//
+// A second, independent layer — Destination history — plots every past
+// booking's destination(s) instead, aggregated one pin per unique place
+// (see lib/destinationHistory.ts) since the same municipality is typically
+// booked over and over. Coordinates come from lib/repo/destinationGeocodes.ts,
+// resolved lazily via Nominatim and cached — provinces/municipalities have
+// no coordinates of their own.
 //
 // Default view is centered on the Philippines, since that's where the
 // RACOS province/municipality reference data lives.
@@ -39,12 +62,32 @@ function markerIcon(index: number): L.DivIcon {
   });
 }
 
+// A teardrop pin, deliberately distinct from the vehicle trail's numbered
+// circles — this layer is "places we've been", not "one vehicle's path in
+// order". The badge is the visit count, the same aggregate the popup lists.
+function destinationPinIcon(visitCount: number): L.DivIcon {
+  return L.divIcon({
+    className: "",
+    html: `
+      <div style="position:relative;width:28px;height:36px;">
+        <svg width="28" height="36" viewBox="0 0 28 36" style="position:absolute;top:0;left:0;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));">
+          <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 22 14 22s14-11.5 14-22C28 6.3 21.7 0 14 0z" fill="#A855F7"/>
+        </svg>
+        <div style="position:absolute;top:4px;left:0;width:28px;height:20px;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;">${visitCount}</div>
+      </div>
+    `,
+    iconSize: [28, 36],
+    iconAnchor: [14, 36],
+  });
+}
+
 export default function MapScreen() {
   const { settings } = useSettings();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const historyMarkersRef = useRef<L.Marker[]>([]);
   const historyLineRef = useRef<L.Polyline | null>(null);
+  const destinationMarkersRef = useRef<L.Marker[]>([]);
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(ALL_VEHICLES);
@@ -54,6 +97,21 @@ export default function MapScreen() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+
+  // Destination history — off by default (it's the heavier, business-wide
+  // query + first-time geocoding pass), loaded lazily the first time it's
+  // switched on.
+  const [showDestinationHistory, setShowDestinationHistory] = useState(false);
+  const [destinationDataLoaded, setDestinationDataLoaded] = useState(false);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [bookingLegs, setBookingLegs] = useState<BookingLeg[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [provinces, setProvinces] = useState<Province[]>([]);
+  const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
+  const [geocodes, setGeocodes] = useState<Record<string, DestinationGeocode>>({});
+  const [destinationLoading, setDestinationLoading] = useState(false);
+  const [destinationError, setDestinationError] = useState<string | null>(null);
+  const [resolveProgress, setResolveProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     listVehicles().then(setVehicles);
@@ -148,7 +206,134 @@ export default function MapScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredHistory, labels, settings]);
 
+  // Loads everything Destination history needs, once, the first time it's
+  // switched on — bookings/legs/customers/provinces/municipalities are all
+  // business-wide, unlike the per-vehicle GPS trail above.
+  useEffect(() => {
+    if (!showDestinationHistory || destinationDataLoaded) return;
+    setDestinationLoading(true);
+    setDestinationError(null);
+    Promise.all([
+      listBookings(),
+      listAllBookingLegs(),
+      listCustomers(),
+      listProvinces(),
+      listMunicipalities(),
+      listDestinationGeocodes(),
+    ])
+      .then(([b, legs, c, p, m, cachedGeocodes]) => {
+        setBookings(b);
+        setBookingLegs(legs);
+        setCustomers(c);
+        setProvinces(p);
+        setMunicipalities(m);
+        setGeocodes(cachedGeocodes);
+        setDestinationDataLoaded(true);
+      })
+      .catch((err: unknown) => {
+        setDestinationError(err instanceof Error ? err.message : "Couldn't load destination history.");
+      })
+      .finally(() => setDestinationLoading(false));
+  }, [showDestinationHistory, destinationDataLoaded]);
+
+  // Memoized so this only rebuilds when the underlying data or vehicle
+  // filter actually changes — not on every unrelated re-render (typing in
+  // the date filter, etc.), which would otherwise tear down and rebuild
+  // every destination marker (closing any open popup) each keystroke.
+  const destinationPoints: DestinationHistoryPoint[] = useMemo(
+    () =>
+      destinationDataLoaded
+        ? buildDestinationHistory(
+            bookings,
+            bookingLegs,
+            customers,
+            vehicles,
+            provinces,
+            municipalities,
+            selectedVehicleId === ALL_VEHICLES ? undefined : selectedVehicleId,
+          )
+        : [],
+    [destinationDataLoaded, bookings, bookingLegs, customers, vehicles, provinces, municipalities, selectedVehicleId],
+  );
+
+  // Resolves whatever destinations aren't cached yet, once the aggregate
+  // list is known — paced ~1/sec per Nominatim's usage policy (see
+  // resolveDestinationGeocodes), so this can take a few seconds the first
+  // time a business has many distinct destinations. Every subsequent visit
+  // is instant since the cache persists.
+  useEffect(() => {
+    if (!showDestinationHistory || destinationPoints.length === 0) return;
+    const targets = destinationPoints
+      .filter((p) => !geocodes[p.locationKey])
+      .map((p) => ({ provinceId: p.provinceId, cityId: p.cityId }));
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    setDestinationError(null);
+    resolveDestinationGeocodes(targets, provinces, municipalities, (done, total) => {
+      if (!cancelled) setResolveProgress({ done, total });
+    })
+      .then(() => listDestinationGeocodes())
+      .then((refreshed) => {
+        if (!cancelled) setGeocodes(refreshed);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setDestinationError(err instanceof Error ? err.message : "Couldn't resolve some destinations.");
+      })
+      .finally(() => {
+        if (!cancelled) setResolveProgress(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDestinationHistory, destinationPoints, geocodes, provinces, municipalities]);
+
+  // Redraw destination pins whenever the resolved set changes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    destinationMarkersRef.current.forEach((m) => m.remove());
+    destinationMarkersRef.current = [];
+
+    if (!showDestinationHistory) return;
+
+    const resolvedPoints = destinationPoints
+      .map((point) => ({ point, geocode: geocodes[point.locationKey] }))
+      .filter((x): x is { point: DestinationHistoryPoint; geocode: DestinationGeocode } => Boolean(x.geocode));
+
+    if (resolvedPoints.length === 0) return;
+
+    destinationMarkersRef.current = resolvedPoints.map(({ point, geocode }) => {
+      const visitRows = point.visits
+        .slice(0, 20)
+        .map((v) => `${v.ref} — ${v.customerLabel} (${v.vehicleLabel}), ${formatDateTime(v.date, settings)}`)
+        .join("<br/>");
+      const more = point.visits.length > 20 ? `<br/>+${point.visits.length - 20} more` : "";
+      const popup = `
+        <strong>${point.label}</strong><br/>
+        ${point.visits.length} booking${point.visits.length === 1 ? "" : "s"}<br/><br/>
+        ${visitRows}${more}
+      `;
+      return L.marker([geocode.latitude, geocode.longitude], { icon: destinationPinIcon(point.visits.length) })
+        .addTo(map)
+        .bindPopup(popup, { maxHeight: 260 });
+    });
+
+    // Only auto-fit when the vehicle trail isn't also showing something —
+    // two layers both trying to fitBounds on every render would otherwise
+    // fight over the view.
+    if (filteredHistory.length === 0) {
+      const bounds = L.latLngBounds(resolvedPoints.map(({ geocode }) => [geocode.latitude, geocode.longitude] as [number, number]));
+      map.fitBounds(bounds.pad(0.2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDestinationHistory, destinationPoints, geocodes, settings]);
+
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
+  const resolvedDestinationCount = destinationPoints.filter((p) => geocodes[p.locationKey]).length;
 
   return (
     <div className="space-y-4">
@@ -228,10 +413,37 @@ export default function MapScreen() {
             </span>
           </>
         )}
+
+        <label className="ml-auto flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+          <input
+            type="checkbox"
+            className="h-4 w-4"
+            checked={showDestinationHistory}
+            onChange={(e) => setShowDestinationHistory(e.target.checked)}
+          />
+          Destination history
+          {selectedVehicleId !== ALL_VEHICLES ? ` (${selectedVehicle?.plate_number ?? "this vehicle"} only)` : ""}
+        </label>
       </div>
 
       {historyError && (
         <p className="text-sm" style={{ color: "var(--text-danger)" }}>{historyError}</p>
+      )}
+
+      {showDestinationHistory && (
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+          {destinationLoading
+            ? "Loading bookings…"
+            : resolveProgress
+              ? `Resolving locations… ${resolveProgress.done}/${resolveProgress.total}`
+              : destinationPoints.length === 0
+                ? "No completed bookings to show yet."
+                : `${resolvedDestinationCount} of ${destinationPoints.length} destination${destinationPoints.length === 1 ? "" : "s"} plotted, ${destinationPoints.reduce((n, p) => n + p.visits.length, 0)} booking${destinationPoints.reduce((n, p) => n + p.visits.length, 0) === 1 ? "" : "s"} total.`}
+        </p>
+      )}
+
+      {destinationError && (
+        <p className="text-sm" style={{ color: "var(--text-danger)" }}>{destinationError}</p>
       )}
 
       <div

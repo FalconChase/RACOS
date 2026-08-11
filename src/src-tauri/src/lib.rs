@@ -298,6 +298,12 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0048_booking_overtime_waived.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 49,
+            description: "destination_geocodes",
+            sql: include_str!("../migrations/0049_destination_geocodes.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

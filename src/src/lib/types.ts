@@ -423,6 +423,24 @@ export interface GpsLocationLabel {
   resolved_at: string;
 }
 
+// The forward-geocoding counterpart to GpsLocationLabel — a booking
+// destination's resolved coordinates, cached once per unique place (see
+// lib/repo/destinationGeocodes.ts buildLocationKey) instead of per booking,
+// since the same municipality is typically booked over and over. Powers
+// Map > Destination history. Purely a rebuildable cache derived from
+// municipalities/provinces — local-only, never synced to Cloud.
+export interface DestinationGeocode {
+  business_id: string;
+  location_key: string;
+  province_id: string;
+  municipality_id: string | null;
+  display_name: string;
+  latitude: number;
+  longitude: number;
+  raw_response: unknown | null;
+  resolved_at: string;
+}
+
 // A mileage figure (hand-copied from Traccar for now — real API auto-sync
 // is a later ROT) covering a period rather than an instant. Daily by
 // default at the form level (period_start === period_end) but any row can
