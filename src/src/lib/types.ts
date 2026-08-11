@@ -198,6 +198,11 @@ export interface Booking {
   // returned" when the confirmed arrival lands after end_date — null for
   // every on-time/early return.
   additional_payment: string | null;
+  // Per-booking choice of which Remittances block math to use once the
+  // report's Split is set to "Hybrid" — 'bucket' or 'recorded' (see
+  // RemittancesReport.tsx). Null means unset, and Hybrid treats that the
+  // same as 'bucket'. No effect on anything outside Hybrid mode.
+  remittance_split_override: "bucket" | "recorded" | null;
   created_at: string;
   updated_at: string;
 }

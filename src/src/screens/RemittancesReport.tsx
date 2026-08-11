@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { listBookings } from "../lib/repo/bookings";
+import { listBookings, setRemittanceSplitOverride } from "../lib/repo/bookings";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listOwners } from "../lib/repo/owners";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -61,6 +61,43 @@ type BlockHours = 12 | 24 | null;
 //    (payment_amount / additional_payment), sliced by actual hours, so no
 //    single block ever carries a shortfall that belongs to another block.
 type SplitMode = "bucket" | "recorded";
+
+// The Split control's actual options. "hybrid" isn't a third computation
+// strategy of its own — every booking still runs through buildBookingRows as
+// either "bucket" or "recorded", see resolveSplitMode. It's a per-booking
+// selector: each booking uses whichever of the two its own
+// remittance_split_override says (falling back to "bucket" when unset),
+// instead of the report applying one mode uniformly to every row.
+type SplitSelection = SplitMode | "hybrid";
+
+// Resolves what a specific booking actually renders with. Outside Hybrid,
+// this is just the report-wide selection, unchanged. In Hybrid: autoDefault
+// (see autoSplitModeFromSummary) is what a booking shows out of the box —
+// Recorded once it's overpaid, Bucket otherwise — but a booking's own
+// persisted choice always overrules it once staff explicitly sets one, same
+// as before. Auto is the default, not a hard lock: it just means nobody has
+// to manually decide the common case, while still being free to override
+// any specific booking either direction.
+function resolveSplitMode(selection: SplitSelection, booking: Booking, autoDefault: SplitMode): SplitMode {
+  if (selection !== "hybrid") return selection;
+  return booking.remittance_split_override ?? autoDefault;
+}
+
+// Hybrid's un-set default: "recorded" for an overpaid booking (spreads the
+// surplus proportionally instead of concentrating it on one block, same
+// reasoning as the Bucket/Recorded comparison this whole feature grew out
+// of), "bucket" for everything else (on-target or short — clean per-block
+// numbers, same as before Hybrid existed). Reuses the exact PAID/EXPECTED
+// totals already shown in the R[..]/O[..] summary line right above the
+// picker, so the auto-pick always matches what's visibly on screen. Falls
+// back to "bucket" whenever the rate can't be resolved at all — there's
+// nothing to compare against then, so no heuristic to apply.
+function autoSplitModeFromSummary(summary: BookingSummary): SplitMode {
+  if (summary.recordedExpected == null || summary.overtimeExpected == null) return "bucket";
+  const totalPaid = summary.recordedPaid + summary.overtimePaid;
+  const totalExpected = summary.recordedExpected + summary.overtimeExpected;
+  return totalPaid > totalExpected + EPSILON_MONEY ? "recorded" : "bucket";
+}
 
 // ~30 seconds — guards against a near-zero excess/overtime row appearing
 // purely from floating-point drift in the hour math.
@@ -472,8 +509,9 @@ export default function RemittancesReport() {
   // "Per 24hr" expand each booking into its block/excess/overtime rows —
   // see buildBookingRows.
   const [breakdown, setBreakdown] = useState<BlockHours>(null);
-  // Only meaningful once a breakdown is on — see the SplitMode comment above.
-  const [splitMode, setSplitMode] = useState<SplitMode>("bucket");
+  // Only meaningful once a breakdown is on — see the SplitMode/SplitSelection
+  // comments above.
+  const [splitMode, setSplitMode] = useState<SplitSelection>("bucket");
   // Remittance period — both blank means "All time" (unfiltered, today's
   // original behavior). yyyy-mm-dd strings straight from the date inputs.
   const [periodFrom, setPeriodFrom] = useState("");
@@ -592,6 +630,19 @@ export default function RemittancesReport() {
   function handleOwnerChange(nextOwnerId: string) {
     setOwnerId(nextOwnerId);
     setUnitId(ALL_UNITS);
+  }
+
+  // Persists one booking's Hybrid choice and updates local state so the
+  // report re-renders with it immediately — no refetch needed since this is
+  // the only field that changed.
+  function handleSetSplitOverride(bookingId: string, mode: SplitMode | null) {
+    setRemittanceSplitOverride(bookingId, mode)
+      .then((updated) => {
+        setBookings((prev) => prev.map((b) => (b.id === bookingId ? updated : b)));
+      })
+      .catch((err) => {
+        console.error("Failed to set remittance split override:", err);
+      });
   }
 
   const selectedOwner = owners.find((o) => o.id === ownerId) ?? null;
@@ -762,6 +813,7 @@ export default function RemittancesReport() {
                   [
                     { value: "bucket" as const, label: "Bucket" },
                     { value: "recorded" as const, label: "Recorded" },
+                    { value: "hybrid" as const, label: "Hybrid" },
                   ]
                 ).map(({ value, label }) => (
                   <button
@@ -854,6 +906,7 @@ export default function RemittancesReport() {
                   rowRate={rowRate}
                   blockHours={breakdown}
                   splitMode={splitMode}
+                  onSetSplitOverride={handleSetSplitOverride}
                 />
               ))}
           </div>
@@ -873,14 +926,27 @@ interface UnitTableProps {
   municipalities: Municipality[];
   rowRate: (booking: Booking) => number | null;
   blockHours: BlockHours;
-  splitMode: SplitMode;
+  splitMode: SplitSelection;
+  onSetSplitOverride: (bookingId: string, mode: SplitMode | null) => void;
 }
 
 // One vehicle's remittance lines — a compact statement block (section header
 // with a subtotal, then the 6-column row table) rather than the app's usual
 // fully-gridded operational table, since this is meant to read like a report
 // handed to an owner, not a data-entry screen.
-function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, municipalities, rowRate, blockHours, splitMode }: UnitTableProps) {
+function UnitTable({
+  vehicle,
+  ownerLabel,
+  rows,
+  subtotal,
+  settings,
+  provinces,
+  municipalities,
+  rowRate,
+  blockHours,
+  splitMode,
+  onSetSplitOverride,
+}: UnitTableProps) {
   const showSummary = settings.showRemittanceSummary;
 
   return (
@@ -930,8 +996,11 @@ function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, m
           {rows.flatMap((b) => {
             const rate = rowRate(b);
             const dest = destinationLabel(b, provinces, municipalities);
+            const summary = buildBookingSummary(b, rate);
+            const autoDefault = autoSplitModeFromSummary(summary);
+            const effectiveSplitMode = resolveSplitMode(splitMode, b, autoDefault);
 
-            const blockRows = buildBookingRows(b, blockHours, settings, rate, splitMode).map((row) => (
+            const blockRows = buildBookingRows(b, blockHours, settings, rate, effectiveSplitMode).map((row) => (
               <tr key={row.key} style={{ breakInside: "avoid" }}>
                 <td
                   className="px-3 py-2 font-mono text-sm"
@@ -989,8 +1058,8 @@ function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, m
 
             // Shown for every breakdown mode now, including "Per rent" — it's
             // the one place the recorded-vs-overtime picture shows up at all
-            // once the per-block "of which overtime" note was dropped.
-            const summary = buildBookingSummary(b, rate);
+            // once the per-block "of which overtime" note was dropped. (summary
+            // itself was already computed above, alongside effectiveSplitMode.)
             const summaryText = [
               summaryTag("R", summary.recordedHours, summary.recordedPaid, summary.recordedExpected),
               summary.overtimeHours > EPSILON_HOURS
@@ -999,6 +1068,61 @@ function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, m
             ]
               .filter(Boolean)
               .join(",");
+
+            // Hybrid's per-booking picker — screen-only (print:hidden), and
+            // only worth showing once there are actually blocks to compute
+            // with it. Fully interactive either way: the booking's own
+            // override always wins once set (Clear drops it back to auto),
+            // and the "(auto — ...)" tag only shows while nothing's been
+            // manually picked yet — auto is just what it starts on, not a
+            // ceiling on what staff can choose.
+            const hybridPicker =
+              splitMode === "hybrid" && blockHours !== null ? (
+                <tr key={`${b.id}-hybrid-picker`} className="print:hidden">
+                  <td colSpan={COLUMNS.length} className="px-3 py-1.5" style={{ borderTop: "0.5px solid var(--border)" }}>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span style={{ color: "var(--text-muted)" }}>
+                        Split for this booking:
+                        {b.remittance_split_override == null && (
+                          <span className="ml-1 text-xs italic" style={{ color: "var(--text-muted)" }}>
+                            (auto — {autoDefault === "recorded" ? "overpaid" : "on target or short"})
+                          </span>
+                        )}
+                      </span>
+                      <div className="flex gap-1 rounded-md p-0.5" style={{ background: "var(--surface-2)", border: "0.5px solid var(--border-strong)" }}>
+                        {([
+                          { value: "bucket" as const, label: "Bucket" },
+                          { value: "recorded" as const, label: "Recorded" },
+                        ]).map(({ value, label }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => onSetSplitOverride(b.id, value)}
+                            className="rounded px-2 py-1 text-xs font-medium"
+                            style={
+                              effectiveSplitMode === value
+                                ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                                : { color: "var(--text-secondary)" }
+                            }
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      {b.remittance_split_override != null && (
+                        <button
+                          type="button"
+                          onClick={() => onSetSplitOverride(b.id, null)}
+                          className="text-xs font-medium"
+                          style={{ color: "var(--text-accent)" }}
+                        >
+                          Clear (use default)
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ) : null;
 
             return [
               <tr
@@ -1019,6 +1143,7 @@ function UnitTable({ vehicle, ownerLabel, rows, subtotal, settings, provinces, m
                   {summaryText}
                 </td>
               </tr>,
+              ...(hybridPicker ? [hybridPicker] : []),
               ...blockRows,
             ];
           })}

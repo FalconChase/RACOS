@@ -190,6 +190,9 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     // Never set at creation — only Mark returned (an overtime return) writes
     // this, via markBookingReturned. The column defaults to NULL either way.
     additional_payment: null,
+    // Never set at creation — only picked later, per booking, on the
+    // Remittances report once Split is on Hybrid. See setRemittanceSplitOverride.
+    remittance_split_override: null,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -198,8 +201,9 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     `insert into bookings
        (id, business_id, vehicle_id, customer_id, start_date, end_date, status, destination_province_id,
         destination_city_id, payment_amount, expected_payment, purpose, created_by,
-        pending_availability_check, actual_return_at, actual_departure_at, resolved_rate, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        pending_availability_check, actual_return_at, actual_departure_at, resolved_rate,
+        remittance_split_override, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       booking.id,
       booking.business_id,
@@ -218,6 +222,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.actual_return_at,
       booking.actual_departure_at,
       booking.resolved_rate,
+      booking.remittance_split_override,
       booking.created_at,
       booking.updated_at,
     ],
@@ -483,6 +488,45 @@ export async function correctBookingPayment(id: string, patch: PaymentCorrection
       action: "updated",
       changes,
     });
+  }
+
+  return updated;
+}
+
+// Persists which Remittances block math (Bucket or Recorded) this specific
+// booking should use once the report's Split is set to Hybrid — see
+// RemittancesReport.tsx. Set from that report's per-booking picker, shown
+// only in Hybrid mode. null clears the override, letting Hybrid fall back to
+// its Bucket default for this booking again. Logged to action_logs the same
+// way owner/vehicle edits are, same as every other booking correction here.
+export async function setRemittanceSplitOverride(
+  id: string,
+  mode: "bucket" | "recorded" | null,
+): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+
+  const now = new Date().toISOString();
+  await db.execute(
+    "update bookings set remittance_split_override = ?, updated_at = ? where id = ?",
+    [mode, now, id],
+  );
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+
+  const change = diffField(
+    "remittance_split_override",
+    "Remittance split (Hybrid)",
+    before.remittance_split_override,
+    mode,
+  );
+  if (change) {
+    await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "updated", changes: [change] });
   }
 
   return updated;

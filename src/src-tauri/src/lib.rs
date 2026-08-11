@@ -202,6 +202,18 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0032_gps_location_labels.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 33,
+            description: "booking_remittance_split_override",
+            sql: include_str!("../migrations/0033_booking_remittance_split_override.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 34,
+            description: "default_remittance_summary_on",
+            sql: include_str!("../migrations/0034_default_remittance_summary_on.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
