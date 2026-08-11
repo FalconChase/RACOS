@@ -11,6 +11,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelEtd: false,
   dashLabelEta: false,
   showRemittanceSummary: true,
+  remittancePaymentColor: "#3b82f6",
+  remittanceExpectedOpacity: 50,
   autoMarkDeparted: true,
   showLuzon: true,
   showVisayas: true,
@@ -27,6 +29,8 @@ interface SettingsRow {
   dashLabelEtd: number;
   dashLabelEta: number;
   showRemittanceSummary: number;
+  remittancePaymentColor: string;
+  remittanceExpectedOpacity: number;
   autoMarkDeparted: number;
   showLuzon: number;
   showVisayas: number;
@@ -44,6 +48,8 @@ function toAppSettings(row: SettingsRow): AppSettings {
     dashLabelEtd: row.dashLabelEtd === 1,
     dashLabelEta: row.dashLabelEta === 1,
     showRemittanceSummary: row.showRemittanceSummary === 1,
+    remittancePaymentColor: row.remittancePaymentColor,
+    remittanceExpectedOpacity: row.remittanceExpectedOpacity,
     autoMarkDeparted: row.autoMarkDeparted === 1,
     showLuzon: row.showLuzon === 1,
     showVisayas: row.showVisayas === 1,
@@ -59,6 +65,8 @@ export async function getSettings(): Promise<AppSettings> {
             dash_label_unit as dashLabelUnit, dash_label_lessee as dashLabelLessee,
             dash_label_etd as dashLabelEtd, dash_label_eta as dashLabelEta,
             show_remittance_summary as showRemittanceSummary,
+            remittance_payment_color as remittancePaymentColor,
+            remittance_expected_opacity as remittanceExpectedOpacity,
             auto_mark_departed as autoMarkDeparted,
             show_luzon as showLuzon, show_visayas as showVisayas, show_mindanao as showMindanao
      from app_settings where id = 1`,
@@ -82,8 +90,8 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
     `update app_settings
      set date_format = ?, time_format = ?, duration_display = ?, show_expected_payment = ?,
          dash_label_unit = ?, dash_label_lessee = ?, dash_label_etd = ?, dash_label_eta = ?,
-         show_remittance_summary = ?, auto_mark_departed = ?,
-         show_luzon = ?, show_visayas = ?, show_mindanao = ?
+         show_remittance_summary = ?, remittance_payment_color = ?, remittance_expected_opacity = ?,
+         auto_mark_departed = ?, show_luzon = ?, show_visayas = ?, show_mindanao = ?
      where id = 1`,
     [
       next.dateFormat,
@@ -95,6 +103,8 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       next.dashLabelEtd ? 1 : 0,
       next.dashLabelEta ? 1 : 0,
       next.showRemittanceSummary ? 1 : 0,
+      next.remittancePaymentColor,
+      next.remittanceExpectedOpacity,
       next.autoMarkDeparted ? 1 : 0,
       next.showLuzon ? 1 : 0,
       next.showVisayas ? 1 : 0,

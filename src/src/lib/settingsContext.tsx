@@ -13,6 +13,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   dashLabelEtd: false,
   dashLabelEta: false,
   showRemittanceSummary: true,
+  remittancePaymentColor: "#3b82f6",
+  remittanceExpectedOpacity: 50,
   autoMarkDeparted: true,
   showLuzon: true,
   showVisayas: true,

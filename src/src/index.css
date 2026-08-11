@@ -77,5 +77,15 @@ body {
     height: auto;
     background: #ffffff;
     color: #18181b;
+    /* Chromium's print pipeline defaults to "economy" color adjustment,
+       which is free to flatten non-black text/backgrounds for ink-saving —
+       this is why a custom color (the Remittances Payment picker, any
+       --text-* var) can come out as plain black on the printed page even
+       though it's correct on screen. print-color-adjust: exact opts every
+       printed color out of that flattening, everywhere, since the property
+       inherits from here. -webkit- prefix is the one Chromium/WebView2
+       actually reads; the unprefixed name is the current spec name. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

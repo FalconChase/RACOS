@@ -916,6 +916,45 @@ export default function SettingsScreen({ onSignOut }: { onSignOut: () => void })
           <p className="text-sm" style={{ color: "var(--text-muted)" }}>
             The compact R[..]/O[..] summary row on Settlements &gt; Remittances. Off by default — it's a staff/audit detail, not something an owner-facing screen needs by default. Always included when printing a statement, regardless of this setting.
           </p>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-base" style={{ color: "var(--text-primary)" }}>Actual payment color</div>
+            <div className="flex shrink-0 items-center gap-2">
+              <input
+                type="color"
+                className="h-8 w-12 cursor-pointer rounded border-0 bg-transparent p-0"
+                value={settings.remittancePaymentColor}
+                onChange={(e) => setSettings({ remittancePaymentColor: e.target.value })}
+              />
+              <span className="font-mono text-sm" style={{ color: "var(--text-muted)" }}>
+                {settings.remittancePaymentColor}
+              </span>
+            </div>
+          </div>
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            The Payment figure on Settlements &gt; Remittances — the "expected: X" line underneath it always stays muted regardless of this. Blue by default.
+          </p>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-base" style={{ color: "var(--text-primary)" }}>Expected/indicator text opacity</div>
+            <div className="flex shrink-0 items-center gap-2">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                className="w-40"
+                value={settings.remittanceExpectedOpacity}
+                onChange={(e) => setSettings({ remittanceExpectedOpacity: Number(e.target.value) })}
+              />
+              <span className="w-10 text-right font-mono text-sm" style={{ color: "var(--text-muted)" }}>
+                {settings.remittanceExpectedOpacity}%
+              </span>
+            </div>
+          </div>
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            How faint the "expected: X" line and the R[..]/O[..] summary row read on Settlements &gt; Remittances — both render in the normal text color at this opacity rather than a fixed grey, so they stay legible whether on screen or printed. 50% by default.
+          </p>
         </div>
       </div>
 

@@ -106,6 +106,18 @@ const EPSILON_HOURS = 1 / 120;
 // qualifying for the clean full-rate amount or not.
 const EPSILON_MONEY = 0.01;
 
+// The "expected: X" line, its note, and the R[..]/O[..] summary row all
+// render at the theme's normal text color (near-black on the printed page,
+// near-white on screen — see index.css's @media print remap) with this
+// opacity layered on top, rather than a separate hardcoded color. That way
+// it stays visibly distinct from the actual Payment figure just above it
+// (settings.remittancePaymentColor) without needing its own color kept in
+// sync across the light/dark-vs-print palettes. settings.remittanceExpectedOpacity
+// is 0-100; style() below converts it to CSS's 0-1 opacity.
+function expectedTextStyle(settings: AppSettings): React.CSSProperties {
+  return { color: "var(--text-primary)", opacity: settings.remittanceExpectedOpacity / 100 };
+}
+
 // Remittance period — a From/To date range for the whole report, both blank
 // by default ("All time", today's original unfiltered behavior). A booking
 // only counts as "clean" for the period if its whole actual span (departure
@@ -1042,16 +1054,16 @@ function UnitTable({
                 </td>
                 <td
                   className="px-3 py-2 text-sm"
-                  style={{ borderTop: "0.5px solid var(--border)", color: "var(--text-primary)" }}
+                  style={{ borderTop: "0.5px solid var(--border)", color: settings.remittancePaymentColor }}
                 >
                   {formatMoney(row.amount)}
                   {/* Always shown, even when it matches the amount exactly —
                       this mirrors the reference sheet's own amount/expected
                       columns, which never hide the comparison. */}
                   {row.expected != null && (
-                    <div style={{ color: "var(--text-muted)" }}>expected: {formatMoney(row.expected)}</div>
+                    <div style={expectedTextStyle(settings)}>expected: {formatMoney(row.expected)}</div>
                   )}
-                  {row.note && <div style={{ color: "var(--text-muted)" }}>{row.note}</div>}
+                  {row.note && <div style={expectedTextStyle(settings)}>{row.note}</div>}
                 </td>
               </tr>
             ));
@@ -1138,7 +1150,7 @@ function UnitTable({
                 <td
                   colSpan={COLUMNS.length}
                   className="px-3 py-2 font-mono text-sm"
-                  style={{ borderTop: "0.5px solid var(--border)", background: "var(--surface-2)", color: "var(--text-secondary)" }}
+                  style={{ borderTop: "0.5px solid var(--border)", background: "var(--surface-2)", ...expectedTextStyle(settings) }}
                 >
                   {summaryText}
                 </td>

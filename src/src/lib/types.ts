@@ -231,6 +231,16 @@ export interface AppSettings {
   // default on screen (a staff/audit detail), but always included when
   // printing regardless of this setting (see RemittancesReport.tsx).
   showRemittanceSummary: boolean;
+  // Text color for the actual-payment figure in Remittances' Payment column
+  // (the "expected: X" line underneath always stays muted, unaffected). A
+  // hex string, freely pickable — blue ("#3b82f6") is just the shipped
+  // default, not a hardcoded rule.
+  remittancePaymentColor: string;
+  // Opacity (0-100) for Remittances' reference text — "expected: X", its
+  // note, and the R[..]/O[..] summary row. Rendered at the theme's normal
+  // text color with this layered on top, not a separate hardcoded color —
+  // see RemittancesReport.tsx. 50 by default.
+  remittanceExpectedOpacity: number;
   // On by default — a still-"pending" booking gets auto-confirmed as
   // departed (see AutoDepartureRunner) once its scheduled start_date
   // passes, instead of waiting on staff to click Mark departed. Turning

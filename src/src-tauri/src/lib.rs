@@ -214,6 +214,18 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0034_default_remittance_summary_on.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 35,
+            description: "remittance_payment_color",
+            sql: include_str!("../migrations/0035_remittance_payment_color.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 36,
+            description: "remittance_expected_opacity",
+            sql: include_str!("../migrations/0036_remittance_expected_opacity.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
