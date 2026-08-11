@@ -7,10 +7,13 @@ import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/re
 import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/rateMatrix";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
-import { exactHoursBetween, formatHHMM, formatHoursAsHHMM, roundToNearestHalfHour } from "../lib/duration";
+import { exactHoursBetween, formatHHMM, formatHoursAsHHMM } from "../lib/duration";
 import { computeExpectedPayment, computeMultiLegExpectedPayment, resolveBookingRate } from "../lib/pricing";
+import { computeOvertimeSettlement } from "../lib/overtimeSettlement";
 import { bookingRef } from "../lib/bookingRef";
 import { destinationLabel } from "../lib/destinationLabel";
+import ConfirmDialog from "../components/ConfirmDialog";
+import WaiveOvertimeButton from "../components/WaiveOvertimeButton";
 import RemittancesReport from "./RemittancesReport";
 import type {
   Booking,
@@ -81,6 +84,8 @@ export default function SettlementsScreen() {
   // Only one row at a time can have its Payment being corrected — see
   // PaymentEditRow below.
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [markingPaidId, setMarkingPaidId] = useState<string | null>(null);
+  const [markPaidBusy, setMarkPaidBusy] = useState(false);
 
   async function refresh() {
     const [b, v, c, p, profile, bands, matrix, customRts, munis, legs] = await Promise.all([
@@ -120,8 +125,14 @@ export default function SettlementsScreen() {
   }
 
   async function handleMarkPaid(id: string) {
-    await markBookingPaid(id);
-    await refresh();
+    setMarkPaidBusy(true);
+    try {
+      await markBookingPaid(id);
+      setMarkingPaidId(null);
+      await refresh();
+    } finally {
+      setMarkPaidBusy(false);
+    }
   }
 
   function rowRate(booking: Booking): number | null {
@@ -205,8 +216,13 @@ export default function SettlementsScreen() {
                 // produce a messy non-round peso amount once run through the
                 // rate. The base scheduled Duration above stays exact.
                 const durationHours = exactHoursBetween(start, end);
-                const rawOvertimeHours = settled ? exactHoursBetween(end, actualReturn!) : 0;
-                const overtimeHours = roundToNearestHalfHour(rawOvertimeHours);
+                // Shared with Customers > Outstanding — same computation, so
+                // the two screens can't drift on what a booking's overtime
+                // hours/expected amount are.
+                const overtimeSettlement = computeOvertimeSettlement(
+                  b, vehicles, businessProfile, provinces, seatingBands, rateMatrix, customRates,
+                );
+                const overtimeHours = overtimeSettlement.overtimeHours;
                 const overtime = !settled ? "—" : overtimeHours > 0 ? formatHoursAsHHMM(overtimeHours) : "00:00";
                 const totalTime = settled ? formatHoursAsHHMM(durationHours + overtimeHours) : "—";
 
@@ -241,8 +257,7 @@ export default function SettlementsScreen() {
                 // buildBookingSummary does.
                 const recordedExpected =
                   multiLegRecorded ?? (settled && rate != null ? computeExpectedPayment(rate, durationHours) : null);
-                const overtimeExpected =
-                  settled && overtimeHours > 0 && rate != null ? computeExpectedPayment(rate, overtimeHours) : null;
+                const overtimeExpected = overtimeSettlement.overtimeExpected;
 
                 const hasArrivalDiff = actualReturn !== null && actualReturn.getTime() !== end.getTime();
                 const overtimeColor = overtime !== "—" && overtime !== "00:00" ? "var(--text-danger)" : "var(--text-secondary)";
@@ -264,6 +279,7 @@ export default function SettlementsScreen() {
                       recordedExpected={recordedExpected}
                       overtimeExpected={overtimeExpected}
                       overtimeHours={overtimeHours}
+                      overtimeWaived={overtimeSettlement.waived}
                       onCancel={() => setEditingPaymentId(null)}
                       onSaved={async () => {
                         setEditingPaymentId(null);
@@ -343,13 +359,18 @@ export default function SettlementsScreen() {
                               incl. {formatMoney(additionalPayment)} overtime
                             </div>
                           )}
+                          {overtimeSettlement.waived && (
+                            <div className="mt-1 text-sm" style={{ color: "var(--text-warning)" }}>
+                              overtime balance written off
+                            </div>
+                          )}
                         </>
                       )}
                       {settled && (
                         <div className="mt-1 flex gap-3">
                           {b.payment_status === "receivable" && (
                             <button
-                              onClick={() => handleMarkPaid(b.id)}
+                              onClick={() => setMarkingPaidId(b.id)}
                               className="text-sm font-medium"
                               style={{ color: "var(--text-success)" }}
                             >
@@ -372,6 +393,27 @@ export default function SettlementsScreen() {
             </tbody>
           </table>
         ))}
+
+      {markingPaidId && (() => {
+        const booking = bookings.find((b) => b.id === markingPaidId);
+        if (!booking) return null;
+        return (
+          <ConfirmDialog
+            title="Mark as paid?"
+            description={
+              <>
+                Mark <strong>{bookingRef(booking.id)}</strong> for <strong>{customerLabel(booking.customer_id)}</strong> as paid
+                {booking.payment_amount ? <> ({formatMoney(Number(booking.payment_amount))})</> : null}. This clears its receivable
+                status — undo it manually if this was a mistake.
+              </>
+            }
+            confirmLabel="Mark as paid"
+            onConfirm={() => handleMarkPaid(booking.id)}
+            onCancel={() => setMarkingPaidId(null)}
+            busy={markPaidBusy}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -396,6 +438,7 @@ function PaymentEditRow({
   recordedExpected,
   overtimeExpected,
   overtimeHours,
+  overtimeWaived,
   onCancel,
   onSaved,
 }: {
@@ -403,17 +446,25 @@ function PaymentEditRow({
   recordedExpected: number | null;
   overtimeExpected: number | null;
   overtimeHours: number;
+  overtimeWaived: boolean;
   onCancel: () => void;
   onSaved: () => void;
 }) {
   const currentRecorded = booking.payment_amount ? Number(booking.payment_amount) : 0;
   const currentOvertime = booking.additional_payment ? Number(booking.additional_payment) : 0;
   const hasOvertime = overtimeHours > 0;
+  // Once the remaining balance has been written off, the overtime figure is
+  // final — no more editing it here, only Final settlement (below, via
+  // WaiveOvertimeButton) touches it, and that's already been used.
+  const editableOvertime = hasOvertime && !overtimeWaived;
 
   const [recordedPayment, setRecordedPayment] = useState(String(currentRecorded));
   const [overtimePayment, setOvertimePayment] = useState(String(currentOvertime));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Same confirm-before-commit speed bump as OvertimeSettleForm/"Mark as
+  // paid" — Save opens this instead of writing straight away.
+  const [confirming, setConfirming] = useState(false);
 
   const recordedNum = Number(recordedPayment);
   const overtimeNum = Number(overtimePayment);
@@ -425,7 +476,7 @@ function PaymentEditRow({
     (recordedExpected == null || recordedNum <= recordedExpected);
 
   const overtimeValid =
-    !hasOvertime ||
+    !editableOvertime ||
     (overtimePayment.trim() !== "" &&
       !Number.isNaN(overtimeNum) &&
       overtimeNum >= currentOvertime &&
@@ -440,11 +491,13 @@ function PaymentEditRow({
     try {
       await correctBookingPayment(booking.id, {
         payment_amount: String(recordedNum),
-        additional_payment: hasOvertime ? String(overtimeNum) : undefined,
+        additional_payment: editableOvertime ? String(overtimeNum) : undefined,
       });
+      setConfirming(false);
       onSaved();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
+      setConfirming(false);
     } finally {
       setSaving(false);
     }
@@ -493,18 +546,26 @@ function PaymentEditRow({
                   Overtime payment (currently {formatMoney(currentOvertime)}
                   {overtimeExpected != null ? `, capped at ${formatMoney(overtimeExpected)}` : ""})
                 </label>
-                <input
-                  type="number"
-                  className="w-full rounded-md px-3 py-2.5 text-base"
-                  style={inputStyle}
-                  value={overtimePayment}
-                  onChange={(e) => setOvertimePayment(e.target.value)}
-                />
-                {!overtimeValid && overtimePayment.trim() !== "" && (
-                  <p className="mt-1 text-sm" style={{ color: "var(--text-danger)" }}>
-                    Must be at least {formatMoney(currentOvertime)}
-                    {overtimeExpected != null ? ` and at most ${formatMoney(overtimeExpected)}` : ""}.
+                {overtimeWaived ? (
+                  <p className="text-sm" style={{ color: "var(--text-warning)" }}>
+                    Remaining balance written off — this figure is final.
                   </p>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      className="w-full rounded-md px-3 py-2.5 text-base"
+                      style={inputStyle}
+                      value={overtimePayment}
+                      onChange={(e) => setOvertimePayment(e.target.value)}
+                    />
+                    {!overtimeValid && overtimePayment.trim() !== "" && (
+                      <p className="mt-1 text-sm" style={{ color: "var(--text-danger)" }}>
+                        Must be at least {formatMoney(currentOvertime)}
+                        {overtimeExpected != null ? ` and at most ${formatMoney(overtimeExpected)}` : ""}.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -515,19 +576,50 @@ function PaymentEditRow({
             never changes. Use this to catch up a payment staff forgot to log at the time.
           </p>
 
-          <div className="flex gap-2">
-            <button
-              onClick={handleSave}
-              disabled={saving || !canSave}
-              className="rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
-              style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button onClick={onCancel} className="rounded-md px-4 py-2 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
-              Cancel
-            </button>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirming(true)}
+                disabled={saving || !canSave}
+                className="rounded-md px-4 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+                style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button onClick={onCancel} className="rounded-md px-4 py-2 text-base font-medium" style={{ color: "var(--text-secondary)" }}>
+                Cancel
+              </button>
+            </div>
+            {editableOvertime && (
+              <WaiveOvertimeButton
+                booking={booking}
+                pendingOvertimeAmount={Number.isNaN(overtimeNum) ? currentOvertime : overtimeNum}
+                overtimeExpected={overtimeExpected}
+                onWaived={onSaved}
+              />
+            )}
           </div>
+
+          {confirming && (
+            <ConfirmDialog
+              title="Save payment correction?"
+              description={
+                <>
+                  Record <strong>{formatMoney(recordedNum)}</strong> as the recorded payment
+                  {hasOvertime ? (
+                    <>
+                      {" "}and <strong>{formatMoney(overtimeNum)}</strong> as collected overtime
+                    </>
+                  ) : null}{" "}
+                  for <strong>{bookingRef(booking.id)}</strong>. This can be corrected upward later, but never lowered.
+                </>
+              }
+              confirmLabel="Save"
+              onConfirm={handleSave}
+              onCancel={() => setConfirming(false)}
+              busy={saving}
+            />
+          )}
         </div>
       </td>
     </tr>

@@ -4,6 +4,7 @@ import { listMunicipalities, listProvinces } from "../lib/repo/locations";
 import { useSettings } from "../lib/settingsContext";
 import { isProvinceVisible } from "../lib/islandGroups";
 import SearchableSelect from "../components/SearchableSelect";
+import CustomerOutstandingTab from "./CustomerOutstandingTab";
 import type { Customer, Municipality, Province } from "../lib/types";
 
 const inputStyle: React.CSSProperties = {
@@ -11,6 +12,8 @@ const inputStyle: React.CSSProperties = {
   background: "var(--surface-2)",
   color: "var(--text-primary)",
 };
+
+type Subtab = "customers" | "outstanding";
 
 // Same shape as RegistryScreen's combineAddress — not shared across screens,
 // same spirit as this app's other small per-screen formatting helpers.
@@ -20,6 +23,7 @@ function combineAddress(municipality: Municipality | undefined, province: Provin
 
 export default function CustomersScreen() {
   const { settings } = useSettings();
+  const [subtab, setSubtab] = useState<Subtab>("customers");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [provinces, setProvinces] = useState<Province[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
@@ -90,17 +94,37 @@ export default function CustomersScreen() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button
-          onClick={() => setShowForm((s) => !s)}
-          className="rounded px-5 py-2 text-base font-bold uppercase tracking-wide"
-          style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
-        >
-          {showForm ? "Cancel" : "Record customer"}
-        </button>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex gap-2 rounded-md p-1" style={{ background: "var(--surface-1)" }}>
+          {(["customers", "outstanding"] as Subtab[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setSubtab(t)}
+              className="rounded px-4 py-1.5 text-sm font-medium capitalize"
+              style={
+                subtab === t
+                  ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                  : { color: "var(--text-secondary)" }
+              }
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        {subtab === "customers" && (
+          <button
+            onClick={() => setShowForm((s) => !s)}
+            className="rounded px-5 py-2 text-base font-bold uppercase tracking-wide"
+            style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+          >
+            {showForm ? "Cancel" : "Record customer"}
+          </button>
+        )}
       </div>
 
-      {showForm && (
+      {subtab === "outstanding" && <CustomerOutstandingTab />}
+
+      {subtab === "customers" && showForm && (
         <form
           onSubmit={handleAdd}
           className="space-y-3 rounded-md p-4"
@@ -180,7 +204,7 @@ export default function CustomersScreen() {
         </form>
       )}
 
-      {loading ? (
+      {subtab === "customers" && (loading ? (
         <p className="text-base" style={{ color: "var(--text-muted)" }}>Loading…</p>
       ) : customers.length === 0 ? (
         <p className="text-base" style={{ color: "var(--text-muted)" }}>No customers yet.</p>
@@ -249,7 +273,7 @@ export default function CustomersScreen() {
             )}
           </tbody>
         </table>
-      )}
+      ))}
     </div>
   );
 }

@@ -221,6 +221,9 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     // spirit as actual_departure_at trusting a backdated start_date at face
     // value. 'receivable' leaves this null until markBookingPaid.
     paid_at: (input.payment_status ?? "paid") === "paid" ? nowIso : null,
+    // Never set at creation — only waiveOvertimeBalance writes this, and
+    // only after a booking has actually closed out with overtime.
+    overtime_waived_at: null,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -560,6 +563,44 @@ export async function correctBookingPayment(id: string, patch: PaymentCorrection
       changes,
     });
   }
+
+  return updated;
+}
+
+// The "final settlement" half of partial/final overtime settlement — a
+// deliberate write-off of whatever's left of a booking's overtime top-up
+// once staff decides they're not going to collect any more of it. Doesn't
+// touch additional_payment (whatever was actually collected, via
+// correctBookingPayment, stays the true recorded figure) — this only stamps
+// overtime_waived_at, which is what computeOvertimeSettlement/
+// isOvertimeUnsettled check to stop treating the gap as still outstanding.
+// One-directional and irreversible through the UI (no "un-waive" path
+// today, same as markBookingPaid has no "un-mark" path) — logged to
+// action_logs like every other payment-affecting correction here.
+export async function waiveOvertimeBalance(id: string): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+  if (before.overtime_waived_at) return before;
+
+  const now = new Date().toISOString();
+  await db.execute(
+    "update bookings set overtime_waived_at = ?, updated_at = ? where id = ?",
+    [now, now, id],
+  );
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+  await logAction({
+    entityType: "booking",
+    entityId: id,
+    entityLabel: bookingRef(id),
+    action: "updated",
+    changes: [{ field: "overtime_waived_at", label: "Overtime balance", old: "outstanding", new: "waived" }],
+  });
 
   return updated;
 }

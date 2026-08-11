@@ -292,6 +292,12 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0047_vehicle_fuel_max_level_default.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 48,
+            description: "booking_overtime_waived",
+            sql: include_str!("../migrations/0048_booking_overtime_waived.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

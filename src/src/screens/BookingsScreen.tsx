@@ -586,14 +586,18 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     Number.isFinite(Number(fuelLevel)) &&
     Number(fuelLevel) > selectedVehicle.fuel_max_level;
 
+  // Whether paid already or still receivable, staff must declare a figure —
+  // an empty Paid/AR field used to slip through silently (ROD022).
+  const paymentAmountValid = paymentAmount.trim() !== "" && Number.isFinite(Number(paymentAmount)) && Number(paymentAmount) >= 0;
+
   // Per-step gate for the wizard's Next button — same underlying checks
   // canSubmit already does, just split per step so each one only unlocks
-  // once its own fields are actually valid. Payment has nothing required.
+  // once its own fields are actually valid.
   const stepValid = [
     isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId),
     Boolean(vehicleId) && !fuelLevelExceedsMax,
     Boolean(destinationProvinceId) && Boolean(startDT) && Boolean(endDT) && !dateOrderInvalid && legsValid,
-    true,
+    paymentAmountValid,
   ];
 
   const canSubmit =
@@ -604,6 +608,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     Boolean(endDT) &&
     !dateOrderInvalid &&
     legsValid &&
+    paymentAmountValid &&
     (isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId));
 
   // Does the actual save, once we know whether arrival needs to be resolved:
@@ -1182,12 +1187,19 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                   <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
                     <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Paid / AR</div>
                     <input
+                      type="number"
+                      min={0}
                       className="w-full rounded-md px-3 py-2 text-base"
                       style={inputStyle}
-                      placeholder={notYetPaid ? "Amount agreed (not yet collected)" : "Amount collected"}
+                      placeholder={notYetPaid ? "Amount agreed (not yet collected) *" : "Amount collected *"}
                       value={paymentAmount}
                       onChange={(e) => setPaymentAmount(e.target.value)}
                     />
+                    {!paymentAmountValid && (
+                      <p className="mt-1 text-xs" style={{ color: "var(--text-danger)" }}>
+                        {notYetPaid ? "Enter the amount agreed with the customer." : "Enter the amount collected."}
+                      </p>
+                    )}
                     <label className="mt-1.5 flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
                       <input
                         type="checkbox"

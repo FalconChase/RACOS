@@ -239,6 +239,13 @@ export interface Booking {
   // RemittancesReport.tsx). Null means unset, and Hybrid treats that the
   // same as 'bucket'. No effect on anything outside Hybrid mode.
   remittance_split_override: "bucket" | "recorded" | null;
+  // Set once staff deliberately writes off whatever's left of this
+  // booking's overtime top-up — a "final settlement" that closes it out as
+  // fully settled even if additional_payment never reached the full
+  // rate-formula amount. Null means the overtime, if any, is still open
+  // (partial or fully unpaid). See waiveOvertimeBalance and
+  // lib/overtimeSettlement.ts. Local-only — never pushed to Cloud.
+  overtime_waived_at: string | null;
   created_at: string;
   updated_at: string;
 }
