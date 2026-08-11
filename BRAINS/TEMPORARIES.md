@@ -45,6 +45,8 @@
 | ROT020 | HIGH | Owners' Portal real data screens — Vehicle status, Activity log, Financials, reading owner-scoped Supabase data (owner RLS) via createOwnerClient | SES015 |
 | ROT025 | MED  | Factory reset AND Reset test data both removed (bulk-wiping a business's own history undermines transparency, even local-only/logged); action_logs widened for 'system'/'reset' (migration 0028) so the remaining bulk tool, Clear stale test data (cross-business rows only), is always logged (ROD021) | SES015 |
 | ROT026-030 | HIGH | ROP011 — odometer_readings/gps_location_entries/mileage_entries (append-only via RLS omission, variance tracking); Tools > Entries (Odometer Log/GPS Log/Reports) desktop; Owners' Portal Entries tab (first write access); Record through MAP trail recorder; Convert to location (Nominatim, gps_location_labels cache); Map tab per-vehicle logged-history trail + MiniMapModal | SES016 |
+| ROT031-032 | MED  | Data model round (customer address, bookings.payment_status, fuel_level_entries + settings.fuelUnit, booking_legs + destination_note, vehicles.notes/color/description); Registry Vehicles polish (Description/Color/Fuel dropdown, Owner locked on edit row, optional fields mirrored to intake) | SES017 |
+| ROT033-036 | HIGH | New rental rebuilt into a 5-step Cancel-only popup wizard (bordered-table structure, inline fuel/odometer logging, bidirectional customer Contact/Address edits, reached-step review nav); RC013-016 fixed (portal-based dropdown popups, scroll-close self-catch, ArrivalDialog implicit-submit + ghost-click guards); Home "Record booking" auto-opens the wizard (Walk-in check-out removed); vehicles.fuel_max_level caps fuel entries, Registry-edit-only, default 6 | SES017 |
 
 ---
-# Lines: 50 / 100 — Budget remaining: 50
+# Lines: 52 / 100 — Budget remaining: 48

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listBookings, setRemittanceSplitOverride } from "../lib/repo/bookings";
+import { listAllBookingLegs } from "../lib/repo/bookingLegs";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listOwners } from "../lib/repo/owners";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -8,7 +9,7 @@ import { getCurrentBusinessName } from "../lib/db";
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatHHMM, formatHoursAsHHMM, roundToNearestHalfHour } from "../lib/duration";
-import { computeExpectedPayment, resolveBookingRate } from "../lib/pricing";
+import { computeExpectedPayment, computeMultiLegExpectedPayment, resolveBookingRate } from "../lib/pricing";
 import { bookingRef } from "../lib/bookingRef";
 import { destinationLabel } from "../lib/destinationLabel";
 import { PrinterIcon } from "../components/icons";
@@ -16,6 +17,7 @@ import DatePicker from "../components/DatePicker";
 import type {
   AppSettings,
   Booking,
+  BookingLeg,
   BusinessProfile,
   CustomRate,
   Municipality,
@@ -190,6 +192,11 @@ interface BreakdownRow {
   note: string | null;
   amount: number;
   expected: number | null;
+  // True only for a 'receivable' booking's single row (see buildBookingRows)
+  // — amount is 0 there regardless of any agreed figure on the booking
+  // (note carries "agreed: X" instead), so the renderer knows to show
+  // "Receivable" rather than a real, if zero, collected amount.
+  receivable?: boolean;
 }
 
 // Slices `totalHours` into `blockHours`-sized segments, the last one being
@@ -341,6 +348,13 @@ function buildBookingRows(
   settings: AppSettings,
   rate: number | null,
   splitMode: SplitMode,
+  // Pre-computed multi-destination total for the booking's scheduled span
+  // (see computeMultiLegExpectedPayment) — null for the overwhelmingly
+  // common single-destination case, where `rate` alone still drives
+  // `expected` exactly as before. Only the single-row views below (Per rent,
+  // and receivable) use this; the block-breakdown split intentionally stays
+  // single-rate — see the note above those call sites.
+  multiLegExpected: number | null = null,
 ): BreakdownRow[] {
   const start = new Date(booking.start_date);
   const end = new Date(booking.end_date);
@@ -364,8 +378,43 @@ function buildBookingRows(
   const hasArrivalDiff = booking.actual_return_at != null && actualReturn.getTime() !== end.getTime();
   const late = actualReturn.getTime() > end.getTime();
 
+  // 'receivable' bookings always render as a single row, regardless of
+  // Breakdown/Split — there's no real collected cash to slice into blocks
+  // yet. amount is 0 (excluded from Subtotal/Total, see paymentTotal) even
+  // though an agreed figure may already be on the row; that figure shows in
+  // note instead, exactly like the "incl. X overtime" note does elsewhere.
+  if (booking.payment_status === "receivable") {
+    const expected =
+      multiLegExpected != null
+        ? multiLegExpected + (rate != null && overtimeHours > 0 ? computeExpectedPayment(rate, overtimeHours) ?? 0 : 0)
+        : rate != null
+          ? computeExpectedPayment(rate, durationHours + overtimeHours)
+          : null;
+    return [
+      {
+        key: booking.id,
+        tag: null,
+        etd: formatDateTime(booking.start_date, settings),
+        etaMain: formatDateTime(booking.end_date, settings),
+        etaActual: hasArrivalDiff ? formatDateTime(booking.actual_return_at as string, settings) : null,
+        late,
+        duration: formatHHMM(start, end),
+        durationExtra: overtimeHours > EPSILON_HOURS ? `total: ${formatHoursAsHHMM(durationHours + overtimeHours)}` : null,
+        note: totalPayment > 0 ? `agreed: ${formatMoney(totalPayment)}` : null,
+        amount: 0,
+        expected,
+        receivable: true,
+      },
+    ];
+  }
+
   if (blockHours === null) {
-    const expected = rate != null ? computeExpectedPayment(rate, durationHours + overtimeHours) : null;
+    const expected =
+      multiLegExpected != null
+        ? multiLegExpected + (rate != null && overtimeHours > 0 ? computeExpectedPayment(rate, overtimeHours) ?? 0 : 0)
+        : rate != null
+          ? computeExpectedPayment(rate, durationHours + overtimeHours)
+          : null;
     return [
       {
         key: booking.id,
@@ -399,7 +448,7 @@ function buildBookingRows(
     if (recordedRows.length === 0) {
       // Degenerate edge case (a near-zero-length booking) — fall back to the
       // single-row view rather than showing nothing.
-      return buildBookingRows(booking, null, settings, rate, splitMode);
+      return buildBookingRows(booking, null, settings, rate, splitMode, multiLegExpected);
     }
     return recordedRows;
   }
@@ -454,7 +503,7 @@ function buildBookingRows(
   if (rows.length === 0) {
     // Degenerate edge case (a near-zero-length booking) — fall back to the
     // single-row view rather than showing nothing.
-    return buildBookingRows(booking, null, settings, rate, splitMode);
+    return buildBookingRows(booking, null, settings, rate, splitMode, multiLegExpected);
   }
 
   return rows;
@@ -476,7 +525,12 @@ interface BookingSummary {
 // two ("uncounted") — the same shape as the top summary in the reference
 // sheet, shown once per booking above its own block breakdown so the blocks
 // below aren't the only place the overtime picture shows up.
-function buildBookingSummary(booking: Booking, rate: number | null): BookingSummary {
+function buildBookingSummary(
+  booking: Booking,
+  rate: number | null,
+  // Same multi-destination override as buildBookingRows — see its comment.
+  multiLegExpected: number | null = null,
+): BookingSummary {
   const start = new Date(booking.start_date);
   const end = new Date(booking.end_date);
   const actualDeparture = booking.actual_departure_at ? new Date(booking.actual_departure_at) : start;
@@ -488,7 +542,8 @@ function buildBookingSummary(booking: Booking, rate: number | null): BookingSumm
   const totalHoursExact = exactHoursBetween(actualDeparture, actualReturn);
   const overtimeHours = roundToNearestHalfHour(Math.max(0, totalHoursExact - durationHours));
 
-  const recordedExpected = rate != null ? computeExpectedPayment(rate, durationHours) : null;
+  const recordedExpected =
+    multiLegExpected != null ? multiLegExpected : rate != null ? computeExpectedPayment(rate, durationHours) : null;
   const overtimeExpected = rate != null ? computeExpectedPayment(rate, overtimeHours) : null;
 
   return {
@@ -538,6 +593,7 @@ export default function RemittancesReport() {
   const [seatingBands, setSeatingBands] = useState<SeatingBand[]>([]);
   const [rateMatrix, setRateMatrix] = useState<RateMatrixRow[]>([]);
   const [customRates, setCustomRates] = useState<CustomRate[]>([]);
+  const [bookingLegs, setBookingLegs] = useState<BookingLeg[]>([]);
   const [businessName, setBusinessName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -553,7 +609,8 @@ export default function RemittancesReport() {
       listRateMatrix(),
       listCustomRates(),
       getCurrentBusinessName(),
-    ]).then(([b, v, o, p, munis, profile, bands, matrix, customRts, bizName]) => {
+      listAllBookingLegs(),
+    ]).then(([b, v, o, p, munis, profile, bands, matrix, customRts, bizName, legs]) => {
       setBookings(b);
       setVehicles(v);
       setOwners(o);
@@ -564,6 +621,7 @@ export default function RemittancesReport() {
       setRateMatrix(matrix);
       setCustomRates(customRts);
       setBusinessName(bizName);
+      setBookingLegs(legs);
       setLoading(false);
     });
   }, []);
@@ -572,7 +630,12 @@ export default function RemittancesReport() {
     return resolveBookingRate(booking, vehicles, businessProfile, provinces, seatingBands, rateMatrix, customRates);
   }
 
+  // Excludes 'receivable' bookings entirely — Subtotal/Total only ever
+  // reflects money actually collected. The agreed amount still shows on the
+  // booking's own row (see buildBookingRows), just not counted here until
+  // markBookingPaid (Settlements > Records) flips it to 'paid'.
   function paymentTotal(booking: Booking): number {
+    if (booking.payment_status === "receivable") return 0;
     const base = booking.payment_amount ? Number(booking.payment_amount) : 0;
     const extra = booking.additional_payment ? Number(booking.additional_payment) : 0;
     return base + extra;
@@ -622,6 +685,17 @@ export default function RemittancesReport() {
     }
     return map;
   }, [inPeriod]);
+
+  // Grouped once per bookingLegs change — same pattern as byVehicle above.
+  const legsByBooking = useMemo(() => {
+    const map = new Map<string, BookingLeg[]>();
+    for (const leg of bookingLegs) {
+      const list = map.get(leg.booking_id) ?? [];
+      list.push(leg);
+      map.set(leg.booking_id, list);
+    }
+    return map;
+  }, [bookingLegs]);
 
   function vehicleRows(vehicleId: string): Booking[] {
     return byVehicle.get(vehicleId) ?? [];
@@ -919,6 +993,11 @@ export default function RemittancesReport() {
                   blockHours={breakdown}
                   splitMode={splitMode}
                   onSetSplitOverride={handleSetSplitOverride}
+                  legsByBooking={legsByBooking}
+                  businessProfile={businessProfile}
+                  seatingBands={seatingBands}
+                  rateMatrix={rateMatrix}
+                  customRates={customRates}
                 />
               ))}
           </div>
@@ -940,6 +1019,12 @@ interface UnitTableProps {
   blockHours: BlockHours;
   splitMode: SplitSelection;
   onSetSplitOverride: (bookingId: string, mode: SplitMode | null) => void;
+  // Multi-destination support — see buildBookingRows/buildBookingSummary.
+  legsByBooking: Map<string, BookingLeg[]>;
+  businessProfile: BusinessProfile | null;
+  seatingBands: SeatingBand[];
+  rateMatrix: RateMatrixRow[];
+  customRates: CustomRate[];
 }
 
 // One vehicle's remittance lines — a compact statement block (section header
@@ -958,6 +1043,11 @@ function UnitTable({
   blockHours,
   splitMode,
   onSetSplitOverride,
+  legsByBooking,
+  businessProfile,
+  seatingBands,
+  rateMatrix,
+  customRates,
 }: UnitTableProps) {
   const showSummary = settings.showRemittanceSummary;
 
@@ -1007,12 +1097,22 @@ function UnitTable({
         <tbody>
           {rows.flatMap((b) => {
             const rate = rowRate(b);
-            const dest = destinationLabel(b, provinces, municipalities);
-            const summary = buildBookingSummary(b, rate);
+            const legs = legsByBooking.get(b.id) ?? [];
+            const dest = destinationLabel(b, provinces, municipalities, legs);
+            // Multi-destination total for the booking's scheduled span (see
+            // computeMultiLegExpectedPayment) — null for the common
+            // single-destination case, where the block-breakdown views below
+            // stay exactly as before. See buildBookingRows's comment. Every
+            // row in this table shares the same vehicle (see the vehicle prop).
+            const multiLegExpected =
+              legs.length > 0
+                ? computeMultiLegExpectedPayment(b, legs, vehicle, businessProfile, provinces, seatingBands, rateMatrix, customRates)
+                : null;
+            const summary = buildBookingSummary(b, rate, multiLegExpected);
             const autoDefault = autoSplitModeFromSummary(summary);
             const effectiveSplitMode = resolveSplitMode(splitMode, b, autoDefault);
 
-            const blockRows = buildBookingRows(b, blockHours, settings, rate, effectiveSplitMode).map((row) => (
+            const blockRows = buildBookingRows(b, blockHours, settings, rate, effectiveSplitMode, multiLegExpected).map((row) => (
               <tr key={row.key} style={{ breakInside: "avoid" }}>
                 <td
                   className="px-3 py-2 font-mono text-sm"
@@ -1054,9 +1154,12 @@ function UnitTable({
                 </td>
                 <td
                   className="px-3 py-2 text-sm"
-                  style={{ borderTop: "0.5px solid var(--border)", color: settings.remittancePaymentColor }}
+                  style={{
+                    borderTop: "0.5px solid var(--border)",
+                    color: row.receivable ? "var(--text-warning)" : settings.remittancePaymentColor,
+                  }}
                 >
-                  {formatMoney(row.amount)}
+                  {row.receivable ? "Receivable — not yet paid" : formatMoney(row.amount)}
                   {/* Always shown, even when it matches the amount exactly —
                       this mirrors the reference sheet's own amount/expected
                       columns, which never hide the comparison. */}
@@ -1089,7 +1192,7 @@ function UnitTable({
             // manually picked yet — auto is just what it starts on, not a
             // ceiling on what staff can choose.
             const hybridPicker =
-              splitMode === "hybrid" && blockHours !== null ? (
+              splitMode === "hybrid" && blockHours !== null && b.payment_status !== "receivable" ? (
                 <tr key={`${b.id}-hybrid-picker`} className="print:hidden">
                   <td colSpan={COLUMNS.length} className="px-3 py-1.5" style={{ borderTop: "0.5px solid var(--border)" }}>
                     <div className="flex items-center gap-2 text-sm">

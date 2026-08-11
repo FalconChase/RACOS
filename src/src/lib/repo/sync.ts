@@ -205,6 +205,8 @@ const CONFLICT_KEY: Record<OutboxTable, string> = {
   gps_location_entries: "id",
   mileage_entries: "id",
   gps_location_labels: "entry_id",
+  fuel_level_entries: "id",
+  booking_legs: "id",
 };
 
 async function ensureOwnerMirrored(db: Database, ownerId: string): Promise<void> {
@@ -253,8 +255,9 @@ async function mapToCloudShape(
         gps_notes: local.gps_notes,
         created_at: local.created_at,
         updated_at: local.updated_at,
-        // fuel/fuel_capacity/transmission/car_image/car_image_fit stay
-        // local-only by design (ROD019) — never pushed.
+        // fuel/fuel_capacity/transmission/car_image/car_image_fit/notes/
+        // color/description/fuel_max_level stay local-only by design
+        // (ROD019) — never pushed.
       };
 
     case "customers":
@@ -369,6 +372,37 @@ async function mapToCloudShape(
         formatted_address: local.formatted_address,
         raw_response: local.raw_response ? JSON.parse(local.raw_response as string) : null,
         resolved_at: local.resolved_at,
+      };
+
+    // ROP011-style — same append-only shape as odometer_readings above.
+    case "fuel_level_entries":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        vehicle_id: local.vehicle_id,
+        level: local.level,
+        unit: local.unit,
+        reading_at: local.reading_at,
+        recorded_at: local.recorded_at,
+        recorded_by_role: local.recorded_by_role,
+        recorded_by_id: local.recorded_by_id,
+        recorded_by_label: local.recorded_by_label,
+        note: local.note,
+      };
+
+    case "booking_legs":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        booking_id: local.booking_id,
+        sequence: local.sequence,
+        destination_province_id: local.destination_province_id,
+        destination_city_id: local.destination_city_id,
+        note: local.note,
+        start_at: local.start_at,
+        end_at: local.end_at,
+        resolved_rate: local.resolved_rate,
+        created_at: local.created_at,
       };
   }
 }

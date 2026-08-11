@@ -120,6 +120,9 @@ export interface NewBookingInput {
   destination_province_id?: string;
   // Optional finer-grained destination, and what a custom rate matches on.
   destination_city_id?: string;
+  // Optional free-text note on the primary destination. See destination_note
+  // on the Booking type.
+  destination_note?: string;
   // What staff recorded as actually collected — manual, not auto-computed.
   payment_amount?: string;
   // System-computed expected total, passed in from the booking form (which
@@ -136,6 +139,25 @@ export interface NewBookingInput {
   // Per-hour rate resolveRate() came up with in the booking form, passed
   // through so it can be locked in on the row rather than recomputed later.
   resolved_rate?: string;
+  // 'paid' (default, omit for normal bookings) or 'receivable' — the rare
+  // known-customer case where staff records the booking before payment is
+  // actually in hand. See payment_status on the Booking type.
+  payment_status?: "paid" | "receivable";
+  // Extra stops beyond destination_province_id/city_id (the primary
+  // destination) — see BookingLeg. Omitted/empty for the overwhelmingly
+  // common single-destination case. IMPORTANT: end_date above must already
+  // be the *overall* booking end (this array's last entry's end_at) — the
+  // booking form computes that before calling createBooking, since legs are
+  // continuous (each start_at chains off the previous end_at) and only ever
+  // created here, alongside the booking itself.
+  legs?: {
+    destination_province_id?: string;
+    destination_city_id?: string;
+    note?: string;
+    start_at: string;
+    end_at: string;
+    resolved_rate?: string;
+  }[];
 }
 
 export async function createBooking(input: NewBookingInput): Promise<Booking> {
@@ -176,6 +198,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     status,
     destination_province_id: input.destination_province_id ?? null,
     destination_city_id: input.destination_city_id ?? null,
+    destination_note: input.destination_note ?? null,
     payment_amount: input.payment_amount ?? null,
     expected_payment: input.expected_payment ?? null,
     purpose: input.purpose ?? null,
@@ -193,6 +216,11 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     // Never set at creation — only picked later, per booking, on the
     // Remittances report once Split is on Hybrid. See setRemittanceSplitOverride.
     remittance_split_override: null,
+    payment_status: input.payment_status ?? "paid",
+    // A 'paid' booking is treated as settled the moment it's recorded — same
+    // spirit as actual_departure_at trusting a backdated start_date at face
+    // value. 'receivable' leaves this null until markBookingPaid.
+    paid_at: (input.payment_status ?? "paid") === "paid" ? nowIso : null,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -200,10 +228,10 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
   await db.execute(
     `insert into bookings
        (id, business_id, vehicle_id, customer_id, start_date, end_date, status, destination_province_id,
-        destination_city_id, payment_amount, expected_payment, purpose, created_by,
+        destination_city_id, destination_note, payment_amount, expected_payment, purpose, created_by,
         pending_availability_check, actual_return_at, actual_departure_at, resolved_rate,
-        remittance_split_override, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        remittance_split_override, payment_status, paid_at, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       booking.id,
       booking.business_id,
@@ -214,6 +242,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.status,
       booking.destination_province_id,
       booking.destination_city_id,
+      booking.destination_note,
       booking.payment_amount,
       booking.expected_payment,
       booking.purpose,
@@ -223,12 +252,54 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.actual_departure_at,
       booking.resolved_rate,
       booking.remittance_split_override,
+      booking.payment_status,
+      booking.paid_at,
       booking.created_at,
       booking.updated_at,
     ],
   );
 
   await queueOutbox(db, "bookings", id, "insert", booking as unknown as Record<string, unknown>);
+
+  if (input.legs && input.legs.length > 0) {
+    let sequence = 1;
+    for (const leg of input.legs) {
+      const legId = crypto.randomUUID();
+      const legRow = {
+        id: legId,
+        business_id,
+        booking_id: id,
+        sequence,
+        destination_province_id: leg.destination_province_id ?? null,
+        destination_city_id: leg.destination_city_id ?? null,
+        note: leg.note ?? null,
+        start_at: leg.start_at,
+        end_at: leg.end_at,
+        resolved_rate: leg.resolved_rate ?? null,
+        created_at: nowIso,
+      };
+      await db.execute(
+        `insert into booking_legs
+           (id, business_id, booking_id, sequence, destination_province_id, destination_city_id, note, start_at, end_at, resolved_rate, created_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          legRow.id,
+          legRow.business_id,
+          legRow.booking_id,
+          legRow.sequence,
+          legRow.destination_province_id,
+          legRow.destination_city_id,
+          legRow.note,
+          legRow.start_at,
+          legRow.end_at,
+          legRow.resolved_rate,
+          legRow.created_at,
+        ],
+      );
+      await queueOutbox(db, "booking_legs", legId, "insert", legRow);
+      sequence += 1;
+    }
+  }
 
   // Vehicle status follows the booking it was just tied to: out and
   // unresolved -> rented; resolved as arrived right away -> available.
@@ -528,6 +599,41 @@ export async function setRemittanceSplitOverride(
   if (change) {
     await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "updated", changes: [change] });
   }
+
+  return updated;
+}
+
+// Settles a 'receivable' booking — staff confirming the previously-agreed
+// amount has actually been collected. Stamps paid_at at the real moment this
+// is called, distinct from created_at (when the booking was originally
+// logged). No-op-safe to call on an already-'paid' booking (paid_at stays
+// whatever it already was) rather than erroring, since Settlements gates the
+// button on payment_status anyway. Logged to action_logs like every other
+// booking correction here.
+export async function markBookingPaid(id: string): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+  if (before.payment_status === "paid") return before;
+
+  const now = new Date().toISOString();
+  await db.execute(
+    "update bookings set payment_status = 'paid', paid_at = ?, updated_at = ? where id = ?",
+    [now, now, id],
+  );
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+  await logAction({
+    entityType: "booking",
+    entityId: id,
+    entityLabel: bookingRef(id),
+    action: "updated",
+    changes: [{ field: "payment_status", label: "Payment status", old: "receivable", new: "paid" }],
+  });
 
   return updated;
 }

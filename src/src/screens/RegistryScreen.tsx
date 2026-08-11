@@ -16,6 +16,14 @@ import type { Municipality, Owner, Province, Vehicle, VehicleImageFit, VehicleSt
 
 const NEW_OWNER = "__new__";
 
+// Fixed fuel-type choices for the Vehicles edit form's Fuel dropdown. This
+// field predates it being a dropdown — kept as a plain text column (see
+// migration 0021_vehicle_local_details.sql) rather than a CHECK-constrained
+// enum, so a vehicle already carrying some other value (typed in before this
+// list existed) still shows up as a selectable option instead of silently
+// disappearing.
+const FUEL_TYPE_OPTIONS = ["Gasoline", "Diesel", "Electric", "Hybrid", "Other"];
+
 type Subtab = "vehicleOwner" | "owners" | "vehicles";
 
 const inputStyle: React.CSSProperties = {
@@ -101,6 +109,12 @@ function VehicleOwnerForm() {
   const [gpsDeviceId, setGpsDeviceId] = useState("");
   const [gpsProvider, setGpsProvider] = useState("");
   const [gpsNotes, setGpsNotes] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState("");
+  const [fuel, setFuel] = useState("");
+  const [fuelCapacity, setFuelCapacity] = useState("");
+  const [transmission, setTransmission] = useState("");
+  const [notes, setNotes] = useState("");
 
   async function refresh() {
     setLoading(true);
@@ -152,6 +166,12 @@ function VehicleOwnerForm() {
     setGpsDeviceId("");
     setGpsProvider("");
     setGpsNotes("");
+    setDescription("");
+    setColor("");
+    setFuel("");
+    setFuelCapacity("");
+    setTransmission("");
+    setNotes("");
   }
 
   const canSubmit =
@@ -194,6 +214,14 @@ function VehicleOwnerForm() {
         gps_device_id: gpsDeviceId.trim() || undefined,
         gps_provider: gpsProvider.trim() || undefined,
         gps_notes: gpsNotes.trim() || undefined,
+        description: description.trim() || undefined,
+        color: color.trim() || undefined,
+        fuel: fuel || undefined,
+        fuel_capacity: fuelCapacity.trim() || undefined,
+        // Not collected here — defaults to 6 bars in createVehicle, only
+        // ever adjusted afterward from the Registry Vehicles edit row.
+        transmission: transmission.trim() || undefined,
+        notes: notes.trim() || undefined,
       });
 
       setSuccessMessage(`Registered ${plateNumber.trim()}${isNewOwner ? ` under new owner ${newOwnerName.trim()}` : ""}.`);
@@ -377,11 +405,57 @@ function VehicleOwnerForm() {
             onChange={(e) => setGpsProvider(e.target.value)}
           />
           <input
-            className="col-span-2 rounded-md px-3 py-2.5 text-base sm:col-span-1"
+            className="rounded-md px-3 py-2.5 text-base"
             style={inputStyle}
             placeholder="GPS notes"
             value={gpsNotes}
             onChange={(e) => setGpsNotes(e.target.value)}
+          />
+          <input
+            className="rounded-md px-3 py-2.5 text-base"
+            style={inputStyle}
+            placeholder="Description / variant (e.g. 1.3 XLE CVT)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <input
+            className="rounded-md px-3 py-2.5 text-base"
+            style={inputStyle}
+            placeholder="Color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+          />
+          <select
+            className="rounded-md px-3 py-2.5 text-base"
+            style={inputStyle}
+            value={fuel}
+            onChange={(e) => setFuel(e.target.value)}
+          >
+            <option value="">Fuel</option>
+            {FUEL_TYPE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+          <input
+            className="rounded-md px-3 py-2.5 text-base"
+            style={inputStyle}
+            placeholder="Fuel capacity"
+            value={fuelCapacity}
+            onChange={(e) => setFuelCapacity(e.target.value)}
+          />
+          <input
+            className="rounded-md px-3 py-2.5 text-base"
+            style={inputStyle}
+            placeholder="Transmission"
+            value={transmission}
+            onChange={(e) => setTransmission(e.target.value)}
+          />
+          <input
+            className="col-span-2 rounded-md px-3 py-2.5 text-base sm:col-span-3"
+            style={inputStyle}
+            placeholder="Notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
           />
         </div>
       </FormQuestion>
@@ -879,7 +953,10 @@ function VehicleEditRow({
   const [model, setModel] = useState(vehicle.model ?? "");
   const [year, setYear] = useState(vehicle.year != null ? String(vehicle.year) : "");
   const [seats, setSeats] = useState(vehicle.seats != null ? String(vehicle.seats) : "");
-  const [ownerId, setOwnerId] = useState(vehicle.owner_id ?? "");
+  // Fixed, not editable from this form — see the read-only Owner field
+  // below. Reassigning a vehicle to a different owner isn't something this
+  // form supports; it's set once at registration.
+  const ownerLabel = owners.find((o) => o.id === vehicle.owner_id)?.full_name ?? "—";
   const [chassisNumber, setChassisNumber] = useState(vehicle.chassis_number ?? "");
   const [engineNumber, setEngineNumber] = useState(vehicle.engine_number ?? "");
   const [gpsDeviceId, setGpsDeviceId] = useState(vehicle.gps_device_id ?? "");
@@ -887,6 +964,11 @@ function VehicleEditRow({
   const [gpsNotes, setGpsNotes] = useState(vehicle.gps_notes ?? "");
   const [fuel, setFuel] = useState(vehicle.fuel ?? "");
   const [fuelCapacity, setFuelCapacity] = useState(vehicle.fuel_capacity ?? "");
+  // Ceiling for fuel level entries logged against this vehicle (bars on the
+  // gauge, or liters if settings.fuelUnit is "liters") — caps the New
+  // rental/Entries fuel level input so it can't be recorded as something
+  // absurd like "65 bars".
+  const [fuelMaxLevel, setFuelMaxLevel] = useState(vehicle.fuel_max_level != null ? String(vehicle.fuel_max_level) : "");
   const [transmission, setTransmission] = useState(vehicle.transmission ?? "");
   // Local-only — read once via a file picker and embedded as a base64 data
   // URL directly in the row (see migration 0021_vehicle_local_details.sql),
@@ -897,6 +979,10 @@ function VehicleEditRow({
   // below is the same size as the Fleet popup's frame, so what's previewed
   // here is exactly what shows there.
   const [carImageFit, setCarImageFit] = useState<VehicleImageFit>(vehicle.car_image_fit);
+  const [notes, setNotes] = useState(vehicle.notes ?? "");
+  const [color, setColor] = useState(vehicle.color ?? "");
+  // Variant/trim, e.g. "1.3 XLE CVT" — distinct from Model ("Vios").
+  const [description, setDescription] = useState(vehicle.description ?? "");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -909,8 +995,8 @@ function VehicleEditRow({
   }
 
   const canSave = useMemo(
-    () => Boolean(plateNumber.trim()) && Boolean(make.trim()) && Boolean(model.trim()) && Boolean(seats.trim()) && Boolean(ownerId),
-    [plateNumber, make, model, seats, ownerId],
+    () => Boolean(plateNumber.trim()) && Boolean(make.trim()) && Boolean(model.trim()) && Boolean(seats.trim()) && Boolean(vehicle.owner_id),
+    [plateNumber, make, model, seats, vehicle.owner_id],
   );
 
   async function handleSave() {
@@ -924,7 +1010,6 @@ function VehicleEditRow({
         model: model.trim(),
         year: year.trim() ? Number(year) : null,
         seats: Number(seats),
-        owner_id: ownerId,
         chassis_number: chassisNumber.trim() || null,
         engine_number: engineNumber.trim() || null,
         gps_device_id: gpsDeviceId.trim() || null,
@@ -932,9 +1017,13 @@ function VehicleEditRow({
         gps_notes: gpsNotes.trim() || null,
         fuel: fuel.trim() || null,
         fuel_capacity: fuelCapacity.trim() || null,
+        fuel_max_level: fuelMaxLevel.trim() ? Number(fuelMaxLevel) : null,
         transmission: transmission.trim() || null,
         car_image: carImage || null,
         car_image_fit: carImageFit,
+        notes: notes.trim() || null,
+        color: color.trim() || null,
+        description: description.trim() || null,
       });
       onSaved();
     } catch (err) {
@@ -963,22 +1052,41 @@ function VehicleEditRow({
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Plate number *" value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Make *" value={make} onChange={(e) => setMake(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Model *" value={model} onChange={(e) => setModel(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Description / variant (e.g. 1.3 XLE CVT)" value={description} onChange={(e) => setDescription(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Year" type="number" value={year} onChange={(e) => setYear(e.target.value)} />
+            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Color" value={color} onChange={(e) => setColor(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Seats *" type="number" min={1} value={seats} onChange={(e) => setSeats(e.target.value)} />
-            <select className="rounded-md px-3 py-2.5 text-base" style={inputStyle} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
-              <option value="">Owner *</option>
-              {owners.map((o) => (
-                <option key={o.id} value={o.id}>{o.full_name}</option>
-              ))}
-            </select>
+            <div
+              className="flex items-center rounded-md px-3 py-2.5 text-base"
+              style={{ ...inputStyle, color: "var(--text-muted)", cursor: "not-allowed" }}
+              title="Owner is fixed at registration and can't be reassigned here."
+            >
+              {ownerLabel}
+            </div>
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Chassis number" value={chassisNumber} onChange={(e) => setChassisNumber(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Engine number" value={engineNumber} onChange={(e) => setEngineNumber(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS device ID" value={gpsDeviceId} onChange={(e) => setGpsDeviceId(e.target.value)} />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS provider" value={gpsProvider} onChange={(e) => setGpsProvider(e.target.value)} />
             <input className="col-span-2 rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="GPS notes" value={gpsNotes} onChange={(e) => setGpsNotes(e.target.value)} />
-            <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Fuel" value={fuel} onChange={(e) => setFuel(e.target.value)} />
+            <select className="rounded-md px-3 py-2.5 text-base" style={inputStyle} value={fuel} onChange={(e) => setFuel(e.target.value)}>
+              <option value="">Fuel</option>
+              {[...new Set([...FUEL_TYPE_OPTIONS, ...(fuel ? [fuel] : [])])].map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Fuel capacity" value={fuelCapacity} onChange={(e) => setFuelCapacity(e.target.value)} />
+            <input
+              className="rounded-md px-3 py-2.5 text-base"
+              style={inputStyle}
+              placeholder="Max fuel level (e.g. 8 bars)"
+              type="number"
+              min={0}
+              step="any"
+              value={fuelMaxLevel}
+              onChange={(e) => setFuelMaxLevel(e.target.value)}
+            />
             <input className="rounded-md px-3 py-2.5 text-base" style={inputStyle} placeholder="Transmission" value={transmission} onChange={(e) => setTransmission(e.target.value)} />
+            <input className="col-span-2 rounded-md px-3 py-2.5 text-base sm:col-span-4" style={inputStyle} placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
 
           <div className="flex items-start gap-4">

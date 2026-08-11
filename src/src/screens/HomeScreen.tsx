@@ -10,14 +10,12 @@ import { formatDateTime, formatTime } from "../lib/dateFormat";
 import { formatHoursMinutes } from "../lib/duration";
 import { bookingRef } from "../lib/bookingRef";
 import type { Booking, Customer, Vehicle } from "../lib/types";
-import type { Tab } from "../App";
 
 interface HomeScreenProps {
-  onNavigate: (tab: Tab) => void;
-  onWalkInCheckout: () => void;
+  onRecordBooking: () => void;
 }
 
-export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenProps) {
+export default function HomeScreen({ onRecordBooking }: HomeScreenProps) {
   const { settings } = useSettings();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -248,18 +246,11 @@ export default function HomeScreen({ onNavigate, onWalkInCheckout }: HomeScreenP
 
       <div className="flex gap-3">
         <button
-          onClick={() => onNavigate("bookings")}
+          onClick={onRecordBooking}
           className="rounded-md px-4 py-2.5 text-base"
           style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
         >
-          New rental
-        </button>
-        <button
-          onClick={onWalkInCheckout}
-          className="rounded-md px-4 py-2.5 text-base"
-          style={{ border: "0.5px solid var(--border-strong)", color: "var(--text-primary)" }}
-        >
-          Walk-in check-out
+          Record booking
         </button>
         <button
           disabled

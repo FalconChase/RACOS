@@ -2,7 +2,7 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-10 (SES016), cross-checked directly against the live Supabase schema and all local migration files through 0032.
+Last compiled: 2026-08-11 (SES017), cross-checked directly against all local migration files through 0047 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below).
 
 ---
 
@@ -44,11 +44,13 @@ Last compiled: 2026-08-10 (SES016), cross-checked directly against the live Supa
 | vehicle_id | text FK → vehicles | |
 | customer_id | text FK → customers | |
 | start_date | text (ISO) | scheduled ETD |
-| end_date | text (ISO) | scheduled ETA |
+| end_date | text (ISO) | scheduled ETA — for a multi-leg booking, mirrors the *last* leg's end (`overallEndDT`), not the primary destination's own |
 | status | text | pending / confirmed / active / completed / cancelled — **derived**, never set directly (ROD010) |
-| destination_province_id | text \| null FK → provinces | drives pricing tier |
+| destination_province_id | text \| null FK → provinces | primary destination, drives pricing tier |
 | destination_city_id | text \| null FK → municipalities | optional, also matches custom rate overrides |
+| destination_note | text \| null | per-destination free note (SES017, migration 0043) |
 | purpose | text \| null | free-form, display-only, defaults "Service" |
+| payment_status | text | `paid` \| `receivable` (SES017, migration 0039) — replaces the old free-text "not yet paid" note |
 | payment_amount | text \| null | manually entered by staff, what was actually collected (base) |
 | expected_payment | text \| null | system-computed, hidden by default (Settings > Rental toggle) |
 | created_by | text \| null FK → profiles | |
@@ -59,8 +61,21 @@ Last compiled: 2026-08-10 (SES016), cross-checked directly against the live Supa
 | additional_payment | text \| null | overtime collected, set only via Mark Returned when late |
 | created_at, updated_at | text (ISO) | |
 
+**booking_legs** (Local, SES017 migration 0042) — chained additional stops after the primary destination, for a multi-destination booking. Only ever created alongside the booking itself (`createBooking`) — no add/edit/remove path for an already-saved booking yet.
+| Column | Type | Notes |
+|---|---|---|
+| id | text PK | |
+| business_id, booking_id | text FK/FK | |
+| sequence | integer | ordering; the primary destination is on `bookings` itself, not a row here |
+| destination_province_id, destination_city_id | text FK/FK | each leg's own destination |
+| start_at, end_at | text (ISO) | this leg's Out/Due-back — continuous with the one before (a leg's `start_at` is always the previous leg's `end_at`, or the booking's own `end_date` for the first extra leg), enforced by the booking form, not a DB constraint |
+| resolved_rate | text \| null | mirrors `bookings.resolved_rate` — this leg's own destination's rate, locked in at creation time |
+| note | text \| null | per-leg free note |
+
 **vehicles**, **customers** — referenced for plate number / customer name display only (see their own tabs below for full columns).
-**app_settings** — `duration_display`, `show_expected_payment` affect how this screen describes/reveals duration and expected payment.
+**app_settings** — `duration_display`, `show_expected_payment`, `fuelUnit` (bars/liters) affect how this screen describes/reveals duration, expected payment, and the inline fuel entry field.
+
+**New rental** (SES017 full rebuild) — opens as a popup dialog (not an inline form), exitable only via Cancel (confirms first if the form is dirty). A 5-step wizard, strictly Next/Back on first pass through: **Profile** (customer picker or new-customer inline; Contact No./Address always editable, bidirectionally writes back to the `customers` row — see Customers section above) → **Vehicle** (vehicle picker + optional inline Fuel level/Odometer, each capped by the selected vehicle's `fuel_max_level` and written to `fuel_level_entries`/`odometer_readings` at save time, `reading_at` = save time not the rental's own start) → **Destination** (province-then-city, quick-pick chips, primary + chained `booking_legs`) → **Payment** (`payment_status`, amount, Purpose) → **Summary** (read-only recap, the only step with the real Save button). Once a step has been reached in the current session, its tab becomes clickable/accent-colored for jumping straight back (or forward, within reached range) to review — unreached steps stay inert. The "This booking already happened" ArrivalDialog fires only from an actual Save click, never from Next navigation (RC015/RC016, FX015/FX016).
 
 ---
 
@@ -94,12 +109,18 @@ Full vehicle admin lives in **Registry > Vehicles**, not here — see below. Cli
 | owner_id | text \| null FK → owners | required going forward (ROD011) |
 | chassis_number, engine_number | text \| null | optional at intake, editable later |
 | gps_device_id, gps_provider, gps_notes | text \| null | ROT015 — gps_device_id is the match key against Supabase `vehicle_locations` |
-| fuel, fuel_capacity, transmission | text \| null | **local-only**, no Supabase counterpart |
+| fuel | text \| null | **local-only** — dropdown (Gasoline/Diesel/Electric/Hybrid/Other), unioned with any pre-existing custom value so old free-text data is never dropped from the option list (SES017) |
+| fuel_capacity | text \| null | **local-only**, free text (e.g. tank size) |
+| fuel_max_level | real \| null | **local-only** (SES017, migration 0046) — ceiling for `fuel_level_entries`/booking-wizard fuel readings against this vehicle, read in whatever unit `settings.fuelUnit` currently is; defaults to 6 on every vehicle (migration 0047 backfill + `createVehicle` default), editable **only** from this Registry edit row, never at intake or from either fuel-entry form |
+| transmission | text \| null | **local-only** |
+| notes | text \| null | **local-only** (SES017, migration 0044) |
+| color | text \| null | **local-only** (SES017, migration 0045), e.g. "White" |
+| description | text \| null | **local-only** (SES017, migration 0045) — variant/trim, e.g. "1.3 XLE CVT", distinct from `model` ("Vios") |
 | car_image | text \| null | **local-only**, base64 data URL, embedded in the row |
 | car_image_fit | text | **local-only**, `cover` \| `contain`, default `cover` |
 | created_at, updated_at | text (ISO) | |
 
-Every optional-field edit is written to **action_logs** (see below).
+`owner_id` is a read-only display on this edit row (prevents accidental reassignment, SES017) but stays a normal editable field on the "Register vehicle & owner" intake form, which also mirrors every optional field above (description/color/fuel/fuel_capacity/transmission/notes — not `fuel_max_level`, which is intake-silent and always defaults to 6) under "fill in now or edit later." Every optional-field edit is written to **action_logs** (see below).
 
 ---
 
@@ -151,7 +172,10 @@ Every edit (and creation) is written to **action_logs**:
 | business_id | FK | |
 | full_name | text | required |
 | email, phone, license_number | text \| null | |
+| address_province_id, address_municipality_id, address_line | text \| null FK/FK/text | structured address (SES017, migration 0038) — `updateCustomerAddress()` |
 | created_at, updated_at | text/timestamptz | |
+
+Contact No. and Address are also editable directly from the New rental wizard's Profile step (SES017) — auto-populated from the selected existing customer but always overwritable, or filled inline for a new one; an edit there writes back to this table via `updateCustomerPhone()`/`updateCustomerAddress()` at booking-save time (bidirectional, no separate trip to this tab required).
 
 ---
 
@@ -230,6 +254,16 @@ A software-side tamper-defense layer alongside GPS (Traccar): odometer readings 
 | recorded_by_role | text | `staff` \| `owner` |
 | recorded_by_id, recorded_by_label | uuid/text, text | label is a name snapshot at write time |
 | note | text \| null | |
+
+**fuel_level_entries** (Local + Cloud, SES017 migration 0040) — same append-only/two-timestamp shape as odometer_readings above.
+| Column | Type | Notes |
+|---|---|---|
+| id, business_id, vehicle_id | | |
+| level | real | not capped at the DB level — capped in the UI against the vehicle's `fuel_max_level` (Registry — Vehicles) |
+| unit | text | `bars` \| `liters`, **snapshotted per row** at write time (not read live off `settings.fuelUnit` at display time), so a later Settings change never misreads an old entry |
+| reading_at, recorded_at, recorded_by_role/id/label, note | same shape as odometer_readings | |
+
+Written from two places: Tools > Entries' own Fuel Level tab (`FuelLevelTab.tsx`), and optionally/inline from the New rental wizard's Vehicle step at booking-save time (`reading_at` = save time, not the rental's own start).
 
 **gps_location_entries** (Local + Cloud) — point-in-time "vehicle was here."
 | Column | Type | Notes |

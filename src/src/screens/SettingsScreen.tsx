@@ -439,6 +439,7 @@ function entityTypeLabel(entityType: ActionLogEntry["entity_type"]): string {
   if (entityType === "owner") return "Owner";
   if (entityType === "vehicle") return "Vehicle";
   if (entityType === "system") return "System";
+  if (entityType === "customer") return "Customer";
   return "Booking";
 }
 
@@ -833,6 +834,24 @@ export default function SettingsScreen({ onSignOut }: { onSignOut: () => void })
             </select>
             <p className="mt-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
               How rental length is worded on the booking form and check-out. Pricing always uses the exact elapsed hours x (daily rate / 24) underneath, rounded up to the nearest 50, no matter what's shown here.
+            </p>
+          </div>
+
+          <div className="pt-1" style={{ borderTop: "0.5px solid var(--border)" }}>
+            <label className="mb-1.5 mt-3 block text-sm" style={{ color: "var(--text-secondary)" }}>
+              Fuel level unit
+            </label>
+            <select
+              className="w-full rounded-md px-3 py-2.5 text-base"
+              style={inputStyle}
+              value={settings.fuelUnit}
+              onChange={(e) => setSettings({ fuelUnit: e.target.value as "bars" | "liters" })}
+            >
+              <option value="bars">Bars (gauge segments)</option>
+              <option value="liters">Liters</option>
+            </select>
+            <p className="mt-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
+              How Tools &gt; Entries &gt; Fuel Level logs readings for this fleet. Each logged entry keeps whichever unit was active when it was saved, so changing this later never misreads an old reading.
             </p>
           </div>
 

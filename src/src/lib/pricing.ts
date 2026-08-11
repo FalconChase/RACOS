@@ -1,4 +1,5 @@
-import type { Booking, BusinessProfile, CustomRate, Province, RateMatrixRow, SeatingBand, Tier, Vehicle } from "./types";
+import { exactHoursBetween } from "./duration";
+import type { Booking, BookingLeg, BusinessProfile, CustomRate, Province, RateMatrixRow, SeatingBand, Tier, Vehicle } from "./types";
 
 // Tier 1 = same province as HQ, Tier 2 = different province same region,
 // Tier 3 = everything else (outside region / interisland).
@@ -122,4 +123,94 @@ export function resolveRate(input: ResolveRateInput): ResolvedRate | null {
   }
 
   return null;
+}
+
+// A leg's own resolved rate — same priority as resolveBookingRate: trust the
+// locked-in value if one exists, otherwise recompute live off that leg's own
+// destination.
+function resolveLegRate(
+  leg: Pick<BookingLeg, "resolved_rate" | "destination_province_id" | "destination_city_id">,
+  vehicle: Vehicle,
+  businessProfile: BusinessProfile | null,
+  provinces: Province[],
+  seatingBands: SeatingBand[],
+  rateMatrix: RateMatrixRow[],
+  customRates: CustomRate[],
+): number | null {
+  if (leg.resolved_rate) return Number(leg.resolved_rate);
+  const resolved = resolveRate({
+    vehicle,
+    destinationProvinceId: leg.destination_province_id,
+    destinationCityId: leg.destination_city_id,
+    hqProvinceId: businessProfile?.hq_province_id ?? null,
+    provinces,
+    seatingBands,
+    rateMatrix,
+    customRates,
+  });
+  return resolved ? Number(resolved.rate) : null;
+}
+
+// Sums a multi-destination booking's expected payment across its primary
+// destination plus every extra leg (see BookingLeg) — each priced at its own
+// resolved rate for its own span, rather than one rate applied to the whole
+// booking. legs is empty for the overwhelmingly common single-destination
+// case, where this reduces to exactly computeExpectedPayment(primaryRate,
+// hours) — the same figure as before this feature existed.
+//
+// Returns null (never a partial/short sum) if the primary rate or ANY leg's
+// rate can't be resolved — a booking with an unresolvable rate shows "—"
+// same as today, rather than a misleadingly-low total that silently omits
+// whatever couldn't be priced.
+//
+// Note: this only feeds the single "Per rent" / whole-booking expected
+// figure (BookingsScreen preview, Settlements > Records, Remittances'
+// Per-rent row and R[..]/O[..] summary). Remittances' Per-12hr/24hr block
+// breakdown still prices every block off the primary rate alone —
+// accurately attributing which rate applies to a block that straddles a leg
+// boundary is unsolved, flagged as a known follow-up rather than silently
+// wrong.
+export function computeMultiLegExpectedPayment(
+  booking: Pick<Booking, "start_date" | "end_date" | "destination_province_id" | "destination_city_id" | "resolved_rate">,
+  legs: BookingLeg[],
+  vehicle: Vehicle,
+  businessProfile: BusinessProfile | null,
+  provinces: Province[],
+  seatingBands: SeatingBand[],
+  rateMatrix: RateMatrixRow[],
+  customRates: CustomRate[],
+): number | null {
+  const primaryRate = resolveLegRate(
+    {
+      resolved_rate: booking.resolved_rate,
+      destination_province_id: booking.destination_province_id,
+      destination_city_id: booking.destination_city_id,
+    },
+    vehicle,
+    businessProfile,
+    provinces,
+    seatingBands,
+    rateMatrix,
+    customRates,
+  );
+  if (primaryRate == null || !Number.isFinite(primaryRate)) return null;
+
+  const sortedLegs = [...legs].sort((a, b) => a.sequence - b.sequence);
+  const primaryEnd = sortedLegs[0]?.start_at ?? booking.end_date;
+  const primaryExpected = computeExpectedPayment(
+    primaryRate,
+    exactHoursBetween(new Date(booking.start_date), new Date(primaryEnd)),
+  );
+  if (primaryExpected == null) return null;
+
+  let total = primaryExpected;
+  for (const leg of sortedLegs) {
+    const legRate = resolveLegRate(leg, vehicle, businessProfile, provinces, seatingBands, rateMatrix, customRates);
+    if (legRate == null || !Number.isFinite(legRate)) return null;
+    const legExpected = computeExpectedPayment(legRate, exactHoursBetween(new Date(leg.start_at), new Date(leg.end_at)));
+    if (legExpected == null) return null;
+    total += legExpected;
+  }
+
+  return total;
 }

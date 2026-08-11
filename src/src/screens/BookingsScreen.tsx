@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cancelBooking, createBooking, getTopDestinations, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
 import type { BookingTimeUpdate, CancellationReason, TopDestination } from "../lib/repo/bookings";
+import { createFuelLevelEntry } from "../lib/repo/fuelLevelEntries";
+import { createOdometerReading } from "../lib/repo/odometerReadings";
 import { listVehicles } from "../lib/repo/vehicles";
-import { createCustomer, listCustomers } from "../lib/repo/customers";
+import { createCustomer, listCustomers, updateCustomerAddress, updateCustomerPhone } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
 import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/rateMatrix";
 import { listActionLogsByType } from "../lib/repo/actionLog";
@@ -14,11 +16,11 @@ import { computeTier, findSeatingBand, resolveBookingRate, resolveRate } from ".
 import { isProvinceVisible } from "../lib/islandGroups";
 import DatePicker from "../components/DatePicker";
 import TimePicker from "../components/TimePicker";
-import FormQuestion from "../components/FormQuestion";
 import SearchableSelect from "../components/SearchableSelect";
 import ArrivalDialog from "../components/ArrivalDialog";
 import EditBookingTimesDialog from "../components/EditBookingTimesDialog";
 import CancelBookingDialog from "../components/CancelBookingDialog";
+import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   ActionLogEntry,
   AppSettings,
@@ -38,6 +40,9 @@ import type {
 const NEW_CUSTOMER = "__new__";
 const DEFAULT_PURPOSE = "Service";
 const PURPOSE_OPTIONS = ["Service", "Events", "Vacation", "Personal Visit", "Other"];
+
+// New rental's step wizard order — see the `step` state on BookingsScreen.
+const STEPS = ["Profile", "Vehicle", "Destination", "Payment", "Summary"] as const;
 
 type Subtab = "ongoing" | "history";
 const ONGOING_STATUSES: BookingStatus[] = ["pending", "confirmed", "active"];
@@ -61,6 +66,13 @@ const labelStyle: React.CSSProperties = { color: "var(--text-secondary)" };
 
 interface BookingsScreenProps {
   onCheckout: (bookingId: string) => void;
+  // Set when Home's "Record booking" shortcut sent us here specifically to
+  // open the wizard, rather than just landing on the Rentals tab — skips
+  // the extra click. Consumed once vehicles have loaded (so the disabled/
+  // no-vehicles guard still applies) and cleared via onAutoOpenConsumed so
+  // it doesn't re-fire on every re-render or a later visit to this tab.
+  autoOpenForm?: boolean;
+  onAutoOpenConsumed?: () => void;
 }
 
 // Trims float noise from hourly-rate math (e.g. 81.5h x rate/24) without
@@ -76,7 +88,19 @@ function combineDateTime(date: string, time: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
+// One extra destination leg being built on the form — mirrors what
+// createBooking's `legs` input needs, minus the chained start (derived, see
+// legDateTimes) and resolved_rate (derived, see legRates). Continuous by
+// construction: a leg has no start picker of its own at all, only an end.
+interface DraftLeg {
+  destinationProvinceId: string;
+  destinationCityId: string;
+  note: string;
+  endDate: string;
+  endTime: string;
+}
+
+export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenConsumed }: BookingsScreenProps) {
   const { settings } = useSettings();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -90,6 +114,11 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   const [topDestinations, setTopDestinations] = useState<TopDestination[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // New rental is a popup now — only the in-popup Cancel button (or a
+  // successful save) closes it, never a backdrop click or Escape. If
+  // anything's actually been entered, Cancel asks first instead of silently
+  // wiping a half-filled booking.
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   // Ongoing (pending/confirmed/active) rentals is what staff almost always
   // want to see first when opening Rentals — completed/cancelled bookings
   // file into their own History subtab instead.
@@ -122,21 +151,78 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   }, []);
 
   const [vehicleId, setVehicleId] = useState("");
+  // Optional — logs a fuel_level_entries row (same ROP011 append-only log
+  // Entries > Fuel writes to) alongside the booking, so staff can note the
+  // vehicle's fuel level right where they're already picking it rather than
+  // switching screens. reading_at is always "now" (this form's save time),
+  // never the (possibly future/backdated) rental start — same reasoning
+  // FuelLevelTab's own picker guards against a future reading.
+  const [fuelLevel, setFuelLevel] = useState("");
+  // Same idea, logging to odometer_readings (Entries > Odometer) instead —
+  // both stay optional (a booking can always be recorded with neither), but
+  // having them on hand at pickup is the practical norm.
+  const [odometerKm, setOdometerKm] = useState("");
+  // New rental is a step wizard — Profile, Vehicle, Destination, Payment,
+  // then a read-only Summary that actually submits. Strictly Next/Back, no
+  // jumping ahead of an invalid step while filling it out for the first
+  // time. Once a step has been reached, though, its tab becomes a shortcut
+  // back to it for review — maxStepReached tracks the furthest point so far
+  // (only ever grows within one form session) and gates which tabs the step
+  // tracker will let you click directly.
+  const [step, setStep] = useState(0);
+  const [maxStepReached, setMaxStepReached] = useState(0);
+  useEffect(() => {
+    setMaxStepReached((m) => Math.max(m, step));
+  }, [step]);
+  // The Next button (Payment → Summary) and the Save booking button occupy
+  // the same bottom-right spot, one swapped in for the other the instant
+  // step changes. A fast double-click/tap on Next can land its second click
+  // on Save the moment it appears there, submitting before the Summary is
+  // even seen. Track when we entered a step and ignore a submit that lands
+  // within a beat of that — long enough to eat a ghost click, short enough
+  // that no deliberate click is ever held up.
+  const stepEnteredAtRef = useRef(Date.now());
+  useEffect(() => {
+    stepEnteredAtRef.current = Date.now();
+  }, [step]);
   const [destinationProvinceId, setDestinationProvinceId] = useState("");
   const [destinationCityId, setDestinationCityId] = useState("");
+  // Optional free-text note on the primary destination — see
+  // Booking.destination_note.
+  const [destinationNote, setDestinationNote] = useState("");
   const [purpose, setPurpose] = useState(DEFAULT_PURPOSE);
   const [customerId, setCustomerId] = useState("");
   const [newCustomerName, setNewCustomerName] = useState("");
+  // Phone doubles as "the customer's current phone as edited in this form" —
+  // pre-filled from an existing customer's record when one is picked (see
+  // the sync effect below), or typed fresh for a walk-in. Either way it's
+  // editable, and on save it's written back to the actual Customer record if
+  // it changed (see saveBooking) — bidirectional, not just used for this one
+  // booking.
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  // Same bidirectional idea for address — structured the same way Customer's
+  // own record is (province + municipality + free-text line).
+  const [profileAddressProvinceId, setProfileAddressProvinceId] = useState("");
+  const [profileAddressMunicipalityId, setProfileAddressMunicipalityId] = useState("");
+  const [profileAddressLine, setProfileAddressLine] = useState("");
 
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
-  // Manual field — staff fills in what was actually collected. No auto-fill:
-  // the system's own estimate is computed separately (expectedPayment below)
-  // and stays hidden unless Settings > Rental reveals it.
+  // Manual field — staff fills in what was actually collected (or, when
+  // notYetPaid is checked, what was agreed) . No auto-fill: the system's own
+  // estimate is computed separately (expectedPayment below) and stays hidden
+  // unless Settings > Rental reveals it.
   const [paymentAmount, setPaymentAmount] = useState("");
+  // Rare — a known/trusted customer the booking is recorded for before
+  // payment is actually in hand. Unchecked (the default) keeps today's
+  // behavior: payment_status 'paid', same as every booking before this
+  // existed.
+  const [notYetPaid, setNotYetPaid] = useState(false);
+  // Optional extra stops beyond the primary destination above — empty for
+  // the overwhelmingly common single-destination case. See BookingLeg.
+  const [legs, setLegs] = useState<DraftLeg[]>([]);
 
   async function refresh() {
     setLoading(true);
@@ -180,8 +266,41 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     return customers.find((x) => x.id === id)?.full_name ?? "—";
   }
 
+  // Same province+municipality label shape as lib/destinationLabel.ts, just
+  // working off the draft form's camelCase province/city ids directly
+  // instead of a saved Booking row.
+  function provinceCityLabel(provinceId: string, cityId: string): string {
+    const province = provinces.find((p) => p.id === provinceId);
+    const municipality = municipalities.find((m) => m.id === cityId);
+    if (municipality && province) return `${municipality.name}, ${province.name}`;
+    if (province) return province.name;
+    return "—";
+  }
+
   const isNewCustomer = customerId === NEW_CUSTOMER;
   const selectedVehicle = vehicles.find((v) => v.id === vehicleId);
+  // Picking an existing customer pre-fills the Profile step's phone/address
+  // inputs from their record below — kept for the before/after comparison
+  // saveBooking needs to know whether to write an edit back.
+  const selectedCustomer = useMemo(
+    () => (!isNewCustomer ? customers.find((c) => c.id === customerId) ?? null : null),
+    [customers, customerId, isNewCustomer],
+  );
+
+  // Contact/Address are editable right in the wizard for both an existing
+  // customer and a new walk-in — never just a read-only preview. Selecting a
+  // different (or no) customer re-seeds these from that customer's own
+  // record (blank for a new walk-in), same as any other "pick X, form fills
+  // in" pattern; edits made here are still just local state until Save
+  // actually writes them back (see saveBooking).
+  useEffect(() => {
+    setNewCustomerPhone(selectedCustomer?.phone ?? "");
+    setProfileAddressProvinceId(selectedCustomer?.address_province_id ?? "");
+    setProfileAddressMunicipalityId(selectedCustomer?.address_municipality_id ?? "");
+    setProfileAddressLine(selectedCustomer?.address_line ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId]);
+
   const startDT = useMemo(() => combineDateTime(startDate, startTime), [startDate, startTime]);
   const endDT = useMemo(() => combineDateTime(endDate, endTime), [endDate, endTime]);
   const dateOrderInvalid = Boolean(startDT && endDT && endDT.getTime() <= startDT.getTime());
@@ -219,6 +338,16 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
         .filter((m) => m.province_id === destinationProvinceId)
         .map((m) => ({ value: m.id, label: m.name })),
     [municipalities, destinationProvinceId],
+  );
+
+  // Same province-first cascade as destination, for the Profile step's
+  // address fields.
+  const profileAddressMunicipalityOptions = useMemo(
+    () =>
+      municipalities
+        .filter((m) => m.province_id === profileAddressProvinceId)
+        .map((m) => ({ value: m.id, label: m.name })),
+    [municipalities, profileAddressProvinceId],
   );
 
   // Top-10 most-picked destination cities, resolved to a name/province for
@@ -274,6 +403,87 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
     return Math.ceil(raw / 50) * 50;
   }, [startDT, endDT, dateOrderInvalid, resolvedRate]);
 
+  // Chained start/end per leg — leg 0 starts where the primary destination's
+  // Due back ends, each leg after that starts where the previous one ended.
+  // No leg has its own start picker; only its own end.
+  const legDateTimes = useMemo(() => {
+    const result: { startDT: Date | null; endDT: Date | null }[] = [];
+    let prevEnd = endDT;
+    for (const leg of legs) {
+      const legEndDT = combineDateTime(leg.endDate, leg.endTime);
+      result.push({ startDT: prevEnd, endDT: legEndDT });
+      prevEnd = legEndDT;
+    }
+    return result;
+  }, [legs, endDT]);
+
+  // Each leg's own resolved rate, off its own destination — same
+  // custom-rate/Rate-Matrix/vehicle-fallback priority as resolvedRate above.
+  const legRates = useMemo(() => {
+    if (!selectedVehicle) return legs.map(() => null);
+    return legs.map((leg) =>
+      resolveRate({
+        vehicle: selectedVehicle,
+        destinationProvinceId: leg.destinationProvinceId || null,
+        destinationCityId: leg.destinationCityId || null,
+        hqProvinceId: businessProfile?.hq_province_id ?? null,
+        provinces,
+        seatingBands,
+        rateMatrix,
+        customRates,
+      }),
+    );
+  }, [legs, selectedVehicle, businessProfile, provinces, seatingBands, rateMatrix, customRates]);
+
+  // Every leg needs a destination and a valid, forward-moving end time
+  // before the booking can save — same floor dateOrderInvalid already
+  // enforces for the primary destination.
+  const legsValid = legs.every((leg, i) => {
+    const dt = legDateTimes[i];
+    return (
+      Boolean(leg.destinationProvinceId) &&
+      Boolean(dt.startDT) &&
+      Boolean(dt.endDT) &&
+      dt.endDT!.getTime() > dt.startDT!.getTime()
+    );
+  });
+
+  // The booking's real overall due-back — the last leg's end once any exist,
+  // otherwise just endDT. This, not endDT alone, is what actually gets saved
+  // as end_date and what the backdated-arrival check below runs against.
+  const overallEndDT = legs.length > 0 ? legDateTimes[legDateTimes.length - 1]?.endDT ?? null : endDT;
+
+  // Sums expectedPayment (the primary destination's own share) with every
+  // leg's own share, each at its own resolved rate — see
+  // computeMultiLegExpectedPayment for the same math applied when
+  // recomputing live later (Settlements, Remittances). null (never a
+  // partial/short total) if anything's missing or unresolved.
+  const combinedExpectedPayment = useMemo(() => {
+    if (expectedPayment === null) return null;
+    if (legs.length === 0) return expectedPayment;
+    let total = expectedPayment;
+    for (let i = 0; i < legs.length; i++) {
+      const dt = legDateTimes[i];
+      const rate = legRates[i];
+      if (!dt.startDT || !dt.endDT || !rate) return null;
+      const rateNum = Number(rate.rate);
+      if (!Number.isFinite(rateNum)) return null;
+      const hours = exactHoursBetween(dt.startDT, dt.endDT);
+      total += Math.ceil(((rateNum / 24) * hours) / 50) * 50;
+    }
+    return total;
+  }, [expectedPayment, legs, legDateTimes, legRates]);
+
+  function addLeg() {
+    setLegs((prev) => [...prev, { destinationProvinceId: "", destinationCityId: "", note: "", endDate: "", endTime: "" }]);
+  }
+  function removeLeg(index: number) {
+    setLegs((prev) => prev.filter((_, i) => i !== index));
+  }
+  function updateLeg(index: number, patch: Partial<DraftLeg>) {
+    setLegs((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)));
+  }
+
   // Reference-only rate card for whatever seating band the selected vehicle
   // falls into — shown next to the Payment field so staff can see all three
   // destination tiers at a glance, with the tier matching the current
@@ -308,26 +518,92 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
 
   function resetForm() {
     setVehicleId("");
+    setFuelLevel("");
+    setOdometerKm("");
     setDestinationProvinceId("");
     setDestinationCityId("");
+    setDestinationNote("");
     setPurpose(DEFAULT_PURPOSE);
     setCustomerId("");
     setNewCustomerName("");
     setNewCustomerPhone("");
+    setProfileAddressProvinceId("");
+    setProfileAddressMunicipalityId("");
+    setProfileAddressLine("");
     setStartDate("");
     setStartTime("");
     setEndDate("");
     setEndTime("");
     setPaymentAmount("");
+    setNotYetPaid(false);
+    setLegs([]);
+    setStep(0);
+    setMaxStepReached(0);
     setShowForm(false);
   }
 
+  // Whether anything at all has actually been entered — drives whether
+  // Cancel needs to confirm first. Deliberately loose (any of these having a
+  // value counts), same spirit as canSubmit being strict about what's
+  // actually required.
+  const isDirty = Boolean(
+    vehicleId ||
+      fuelLevel.trim() ||
+      odometerKm.trim() ||
+      destinationProvinceId ||
+      destinationCityId ||
+      destinationNote.trim() ||
+      customerId ||
+      newCustomerName.trim() ||
+      newCustomerPhone.trim() ||
+      startDate ||
+      startTime ||
+      endDate ||
+      endTime ||
+      paymentAmount.trim() ||
+      notYetPaid ||
+      legs.length > 0 ||
+      purpose !== DEFAULT_PURPOSE,
+  );
+
+  // The only way out of the popup — asks first if there's anything to lose,
+  // otherwise just discards and closes right away.
+  function requestCloseForm() {
+    if (isDirty) {
+      setShowDiscardConfirm(true);
+    } else {
+      resetForm();
+    }
+  }
+
+  // Guards against logging something like "65 bars" against an 8-bar gauge
+  // — checked against the selected vehicle's optional Registry-set ceiling
+  // (fuel_max_level), same cap FuelLevelTab/Entries enforces on its own
+  // reading form.
+  const fuelLevelExceedsMax =
+    selectedVehicle?.fuel_max_level != null &&
+    fuelLevel.trim() !== "" &&
+    Number.isFinite(Number(fuelLevel)) &&
+    Number(fuelLevel) > selectedVehicle.fuel_max_level;
+
+  // Per-step gate for the wizard's Next button — same underlying checks
+  // canSubmit already does, just split per step so each one only unlocks
+  // once its own fields are actually valid. Payment has nothing required.
+  const stepValid = [
+    isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId),
+    Boolean(vehicleId) && !fuelLevelExceedsMax,
+    Boolean(destinationProvinceId) && Boolean(startDT) && Boolean(endDT) && !dateOrderInvalid && legsValid,
+    true,
+  ];
+
   const canSubmit =
     Boolean(vehicleId) &&
+    !fuelLevelExceedsMax &&
     Boolean(destinationProvinceId) &&
     Boolean(startDT) &&
     Boolean(endDT) &&
     !dateOrderInvalid &&
+    legsValid &&
     (isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId));
 
   // Does the actual save, once we know whether arrival needs to be resolved:
@@ -335,32 +611,93 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   // "not yet returned"), or an ISO timestamp when the confirmation dialog
   // resolved it as already back.
   async function saveBooking(actualReturnAt: string | null) {
-    if (!startDT || !endDT) return;
+    if (!startDT || !endDT || !overallEndDT) return;
 
     let finalCustomerId = customerId;
     if (isNewCustomer) {
       // Walk-in renter, not registered yet — create the customer record inline
-      // instead of forcing the staff to leave this screen first.
+      // instead of forcing the staff to leave this screen first. Phone/address
+      // are both optional here, same as Customers' own intake form.
       const created = await createCustomer({
         full_name: newCustomerName.trim(),
         phone: newCustomerPhone.trim() || undefined,
+        address_province_id: profileAddressProvinceId || undefined,
+        address_municipality_id: profileAddressMunicipalityId || undefined,
+        address_line: profileAddressLine.trim() || undefined,
       });
       finalCustomerId = created.id;
+    } else if (selectedCustomer) {
+      // Bidirectional — an existing customer's phone/address can be filled
+      // in or corrected right here, and it writes back to their actual
+      // Customer record on save, same as editing it from Customers would.
+      const nextPhone = newCustomerPhone.trim() || null;
+      const nextProvince = profileAddressProvinceId || null;
+      const nextMunicipality = profileAddressMunicipalityId || null;
+      const nextLine = profileAddressLine.trim() || null;
+      if (nextPhone !== selectedCustomer.phone) {
+        await updateCustomerPhone(finalCustomerId, nextPhone);
+      }
+      if (
+        nextProvince !== selectedCustomer.address_province_id ||
+        nextMunicipality !== selectedCustomer.address_municipality_id ||
+        nextLine !== selectedCustomer.address_line
+      ) {
+        await updateCustomerAddress(finalCustomerId, {
+          address_province_id: nextProvince,
+          address_municipality_id: nextMunicipality,
+          address_line: nextLine,
+        });
+      }
     }
+
+    const legsPayload = legs.map((leg, i) => ({
+      destination_province_id: leg.destinationProvinceId || undefined,
+      destination_city_id: leg.destinationCityId || undefined,
+      note: leg.note.trim() || undefined,
+      // legsValid already guaranteed both are non-null for every leg.
+      start_at: legDateTimes[i].startDT!.toISOString(),
+      end_at: legDateTimes[i].endDT!.toISOString(),
+      resolved_rate: legRates[i]?.rate,
+    }));
 
     await createBooking({
       vehicle_id: vehicleId,
       customer_id: finalCustomerId,
       destination_province_id: destinationProvinceId || undefined,
       destination_city_id: destinationCityId || undefined,
+      destination_note: destinationNote.trim() || undefined,
       start_date: startDT.toISOString(),
-      end_date: endDT.toISOString(),
+      // The *overall* due-back — the last leg's end once any exist, not just
+      // the primary destination's own end. See overallEndDT.
+      end_date: overallEndDT.toISOString(),
       payment_amount: paymentAmount.trim() || undefined,
-      expected_payment: expectedPayment !== null ? String(expectedPayment) : undefined,
+      expected_payment: combinedExpectedPayment !== null ? String(combinedExpectedPayment) : undefined,
       purpose: purpose.trim() || undefined,
       actual_return_at: actualReturnAt ?? undefined,
       resolved_rate: resolvedRate?.rate ?? undefined,
+      payment_status: notYetPaid ? "receivable" : undefined,
+      legs: legsPayload.length > 0 ? legsPayload : undefined,
     });
+
+    const fuelLevelNum = Number(fuelLevel);
+    if (fuelLevel.trim() && Number.isFinite(fuelLevelNum) && fuelLevelNum >= 0) {
+      await createFuelLevelEntry({
+        vehicle_id: vehicleId,
+        level: fuelLevelNum,
+        unit: settings.fuelUnit,
+        reading_at: new Date().toISOString(),
+      });
+    }
+
+    const odometerKmNum = Number(odometerKm);
+    if (odometerKm.trim() && Number.isFinite(odometerKmNum) && odometerKmNum >= 0) {
+      await createOdometerReading({
+        vehicle_id: vehicleId,
+        reading_km: odometerKmNum,
+        reading_at: new Date().toISOString(),
+      });
+    }
+
     resetForm();
     setArrivalDialogEta(null);
     await refresh();
@@ -368,12 +705,24 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit || !startDT || !endDT) return;
+    // Guards against the browser's own implicit form submission — pressing
+    // Enter in a lone text field (e.g. the payment amount on step 3) submits
+    // the form natively even though the visible control there is just the
+    // "Next" button, which is type="button" and doesn't call this handler
+    // itself. Only the actual Save step should ever reach the save/arrival
+    // check below.
+    if (step !== STEPS.length - 1) return;
+    // Eats a ghost second-click landing on Save the instant it swaps in for
+    // Next — see stepEnteredAtRef above.
+    if (Date.now() - stepEnteredAtRef.current < 400) return;
+    if (!canSubmit || !startDT || !endDT || !overallEndDT) return;
 
     // Due-back already elapsed — staff needs to say whether the vehicle is
     // already back (and when) before this gets written as a live rental.
-    if (endDT.getTime() < Date.now()) {
-      setArrivalDialogEta(endDT.toISOString());
+    // Checked against the *overall* due-back (last leg's end, if any), not
+    // just the primary destination's own end.
+    if (overallEndDT.getTime() < Date.now()) {
+      setArrivalDialogEta(overallEndDT.toISOString());
       return;
     }
 
@@ -401,6 +750,14 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
   }, [bookingLogs]);
 
   const canShowForm = vehicles.length > 0;
+
+  useEffect(() => {
+    if (autoOpenForm && canShowForm) {
+      setShowForm(true);
+      onAutoOpenConsumed?.();
+    }
+  }, [autoOpenForm, canShowForm, onAutoOpenConsumed]);
+
   const visibleStatuses = subtab === "ongoing" ? ONGOING_STATUSES : HISTORY_STATUSES;
   const visibleBookings = bookings.filter((b) => visibleStatuses.includes(b.status));
 
@@ -428,12 +785,12 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
         </div>
 
         <button
-          onClick={() => setShowForm((s) => !s)}
-          disabled={!canShowForm}
+          onClick={() => setShowForm(true)}
+          disabled={!canShowForm || showForm}
           className="rounded px-5 py-2 text-base font-bold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-40"
           style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
         >
-          {showForm ? "Cancel" : "Record booking"}
+          Record booking
         </button>
       </div>
 
@@ -444,226 +801,568 @@ export default function BookingsScreen({ onCheckout }: BookingsScreenProps) {
       )}
 
       {showForm && (
-        <form onSubmit={handleAdd} className="mx-auto max-w-2xl space-y-4">
-          {/* Form header — Google Forms style colored accent bar + title card */}
-          <div className="overflow-hidden rounded-lg" style={{ border: "0.5px solid var(--border)" }}>
-            <div className="h-2" style={{ background: "var(--fill-primary)" }} />
-            <div className="p-5" style={{ background: "var(--surface-1)" }}>
-              <h3 className="text-xl font-semibold" style={{ color: "var(--text-primary)" }}>
-                New rental
-              </h3>
-              <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-                Record a walk-in or scheduled rental.
-              </p>
-            </div>
-          </div>
-
-          <FormQuestion label="Vehicle *">
-            <select
-              className="w-full rounded-md px-3 py-2.5 text-base"
-              style={inputStyle}
-              value={vehicleId}
-              onChange={(e) => setVehicleId(e.target.value)}
-              required
-            >
-              <option value="">Select a vehicle…</option>
-              {vehicles.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.plate_number}
-                  {v.make ? ` — ${v.make} ${v.model ?? ""}`.trimEnd() : ""}
-                  {v.status !== "available" ? ` (currently ${v.status})` : ""}
-                </option>
-              ))}
-            </select>
-          </FormQuestion>
-
-          <FormQuestion label="Destination *">
-            {topDestinationChips.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {topDestinationChips.map(({ municipality, count }) => (
+        // Popup wizard — no backdrop-click or Escape dismiss on purpose; the
+        // in-popup Cancel button (see requestCloseForm) is the only way out,
+        // and it confirms first if anything's actually been entered.
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0, 0, 0, 0.6)" }}
+        >
+          <div
+            className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg"
+            style={{ background: "var(--surface-1)", border: "0.5px solid var(--border)" }}
+          >
+            <form onSubmit={handleAdd} className="w-full p-4">
+              {/* Step wizard — Profile, Vehicle, Destination, Payment, then a
+                  read-only Summary that's the only step with an actual submit.
+                  Same bordered-table field styling as before, same
+                  state/handlers throughout; only the step gating is new. */}
+              <div className="overflow-hidden rounded-md" style={{ border: "0.5px solid var(--border-strong)" }}>
+                <div
+                  className="flex items-center justify-between px-3 py-2"
+                  style={{ borderBottom: "0.5px solid var(--border-strong)" }}
+                >
+                  <h3 className="text-base font-bold uppercase tracking-wide" style={{ color: "var(--text-primary)" }}>
+                    Record rental
+                  </h3>
                   <button
-                    key={municipality.id}
                     type="button"
-                    onClick={() => selectTopDestination(municipality)}
-                    title={`Picked ${count} time${count === 1 ? "" : "s"} before`}
-                    className="rounded-full px-3 py-1 text-sm"
-                    style={
-                      destinationCityId === municipality.id
-                        ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
-                        : { background: "var(--surface-2)", color: "var(--text-secondary)" }
-                    }
+                    onClick={requestCloseForm}
+                    className="text-sm font-medium"
+                    style={{ color: "var(--text-secondary)" }}
                   >
-                    {municipality.name}
+                    Cancel
                   </button>
-                ))}
-              </div>
-            )}
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <div className="flex-1">
-                <SearchableSelect
-                  value={destinationProvinceId}
-                  onChange={handleDestinationProvinceChange}
-                  options={provinceOptions}
-                  placeholder="Search for a province…"
-                />
-              </div>
-              <div className="flex-1">
-                <SearchableSelect
-                  value={destinationCityId}
-                  onChange={setDestinationCityId}
-                  options={destinationMunicipalityOptions}
-                  placeholder={destinationProvinceId ? "City/municipality (optional)" : "Pick a province first"}
-                />
-              </div>
-            </div>
-          </FormQuestion>
+                </div>
 
-          <FormQuestion label="Customer *">
-            {!isNewCustomer ? (
-              <select
-                className="w-full rounded-md px-3 py-2.5 text-base"
-                style={inputStyle}
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-              >
-                <option value="">Select a customer…</option>
-                <option value={NEW_CUSTOMER}>+ Add new customer (walk-in)</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.full_name}</option>
-                ))}
-              </select>
-            ) : (
-              <div className="space-y-2 rounded-md p-3" style={{ background: "var(--surface-2)" }}>
-                <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="flex" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+              {STEPS.map((label, i) => {
+                // Reachable = already visited this form session, so it's a
+                // review shortcut, not a way to skip ahead while still
+                // filling the wizard out for the first time (that's still
+                // strictly gated by stepValid on the Next button).
+                const reachable = i <= maxStepReached && i !== step;
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    disabled={!reachable}
+                    onClick={reachable ? () => setStep(i) : undefined}
+                    className="flex-1 px-2 py-2 text-center text-xs font-semibold uppercase tracking-wide disabled:cursor-default"
+                    style={{
+                      borderRight: i < STEPS.length - 1 ? "0.5px solid var(--border-strong)" : undefined,
+                      background: i === step ? "var(--fill-primary)" : "var(--surface-2)",
+                      color: i === step ? "var(--on-primary)" : reachable ? "var(--text-accent)" : "var(--text-muted)",
+                      cursor: reachable ? "pointer" : "default",
+                    }}
+                  >
+                    {i + 1}. {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {step === 0 && (
+              <>
+                <div className="grid grid-cols-1 items-start sm:grid-cols-2" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                    <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Customer *</div>
+                    {!isNewCustomer ? (
+                      <select
+                        className="w-full rounded-md px-3 py-2 text-base"
+                        style={inputStyle}
+                        value={customerId}
+                        onChange={(e) => setCustomerId(e.target.value)}
+                      >
+                        <option value="">Select a customer…</option>
+                        <option value={NEW_CUSTOMER}>+ Add new customer (walk-in)</option>
+                        {customers.map((c) => (
+                          <option key={c.id} value={c.id}>{c.full_name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="space-y-1">
+                        <input
+                          className="w-full rounded-md px-3 py-2 text-base"
+                          style={inputStyle}
+                          placeholder="Full name *"
+                          value={newCustomerName}
+                          onChange={(e) => setNewCustomerName(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomerId("");
+                            setNewCustomerName("");
+                            setNewCustomerPhone("");
+                          }}
+                          className="text-sm"
+                          style={{ color: "var(--text-accent)" }}
+                        >
+                          Use an existing customer instead
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Editable either way — existing customer or new walk-in.
+                      Picking an existing customer pre-fills this from their
+                      record (see the sync effect above); leaving it blank or
+                      changing it here writes back to that same Customer
+                      record on Save (see saveBooking) — bidirectional, not
+                      just used for this one booking. */}
+                  <div className="p-2.5">
+                    <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Contact no. (optional)</div>
+                    <input
+                      className="w-full rounded-md px-3 py-2 text-base"
+                      style={inputStyle}
+                      placeholder="Phone (optional)"
+                      value={newCustomerPhone}
+                      onChange={(e) => setNewCustomerPhone(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="p-2.5">
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Address (optional)</div>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <div className="flex-1">
+                      <SearchableSelect
+                        value={profileAddressProvinceId}
+                        onChange={(v) => {
+                          setProfileAddressProvinceId(v);
+                          setProfileAddressMunicipalityId("");
+                        }}
+                        options={provinceOptions}
+                        placeholder="Search for a province…"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <SearchableSelect
+                        value={profileAddressMunicipalityId}
+                        onChange={setProfileAddressMunicipalityId}
+                        options={profileAddressMunicipalityOptions}
+                        placeholder={profileAddressProvinceId ? "City/municipality (optional)" : "Pick a province first"}
+                      />
+                    </div>
+                  </div>
                   <input
-                    className="flex-1 rounded-md px-3 py-2.5 text-base"
+                    className="mt-2 w-full rounded-md px-3 py-2 text-base"
                     style={inputStyle}
-                    placeholder="Full name *"
-                    value={newCustomerName}
-                    onChange={(e) => setNewCustomerName(e.target.value)}
-                  />
-                  <input
-                    className="flex-1 rounded-md px-3 py-2.5 text-base"
-                    style={inputStyle}
-                    placeholder="Phone (optional)"
-                    value={newCustomerPhone}
-                    onChange={(e) => setNewCustomerPhone(e.target.value)}
+                    placeholder="Street address (optional)"
+                    value={profileAddressLine}
+                    onChange={(e) => setProfileAddressLine(e.target.value)}
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCustomerId("");
-                    setNewCustomerName("");
-                    setNewCustomerPhone("");
-                  }}
-                  className="text-sm"
-                  style={{ color: "var(--text-accent)" }}
-                >
-                  Use an existing customer instead
-                </button>
+              </>
+            )}
+
+            {step === 1 && (
+              <div className="grid grid-cols-1 sm:grid-cols-3">
+                <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Vehicle *</div>
+                  <select
+                    className="w-full rounded-md px-3 py-2 text-base"
+                    style={inputStyle}
+                    value={vehicleId}
+                    onChange={(e) => setVehicleId(e.target.value)}
+                    required
+                  >
+                    <option value="">Select a vehicle…</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.plate_number}
+                        {v.make ? ` — ${v.make} ${v.model ?? ""}`.trimEnd() : ""}
+                        {v.status !== "available" ? ` (currently ${v.status})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>
+                    Fuel lvl ({settings.fuelUnit === "bars" ? "bars" : "L"})
+                    {selectedVehicle?.fuel_max_level != null && (
+                      <span className="normal-case" style={{ color: "var(--text-muted)" }}> · max {selectedVehicle.fuel_max_level}</span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={selectedVehicle?.fuel_max_level ?? undefined}
+                    step={settings.fuelUnit === "bars" ? 1 : 0.1}
+                    className="w-full rounded-md px-3 py-2 text-base"
+                    style={inputStyle}
+                    placeholder={settings.fuelUnit === "bars" ? "6" : "42.5"}
+                    value={fuelLevel}
+                    onChange={(e) => setFuelLevel(e.target.value)}
+                  />
+                  {fuelLevelExceedsMax && (
+                    <p className="mt-1 text-xs" style={{ color: "var(--text-danger)" }}>
+                      Above this vehicle&rsquo;s max ({selectedVehicle?.fuel_max_level} {settings.fuelUnit === "bars" ? "bars" : "L"}).
+                    </p>
+                  )}
+                </div>
+                <div className="p-2.5">
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Odometer (km)</div>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-full rounded-md px-3 py-2 text-base"
+                    style={inputStyle}
+                    placeholder="12345"
+                    value={odometerKm}
+                    onChange={(e) => setOdometerKm(e.target.value)}
+                  />
+                </div>
               </div>
             )}
-          </FormQuestion>
 
-          <FormQuestion
-            label="Rental period *"
-            hint={
-              dateOrderInvalid ? (
-                <span style={{ color: "var(--text-danger)" }}>Due back must be after the out date/time.</span>
-              ) : durationText ? (
-                <span>
-                  {durationText}
-                  {exactDurationText && ` · ${exactDurationText}`}
-                </span>
-              ) : null
-            }
-          >
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1.5 block text-sm" style={labelStyle}>Out</label>
-                <div className="flex gap-2">
-                  <div className="w-1/2">
-                    <DatePicker value={startDate} onChange={setStartDate} settings={settings} />
+            {step === 2 && (
+              <>
+                {topDestinationChips.length > 0 && (
+                  <div
+                    className="flex flex-wrap gap-2 p-2.5"
+                    style={{ borderBottom: "0.5px solid var(--border-strong)" }}
+                  >
+                    {topDestinationChips.map(({ municipality, count }) => (
+                      <button
+                        key={municipality.id}
+                        type="button"
+                        onClick={() => selectTopDestination(municipality)}
+                        title={`Picked ${count} time${count === 1 ? "" : "s"} before`}
+                        className="rounded-full px-3 py-1 text-sm"
+                        style={
+                          destinationCityId === municipality.id
+                            ? { background: "var(--fill-primary)", color: "var(--on-primary)" }
+                            : { background: "var(--surface-2)", color: "var(--text-secondary)" }
+                        }
+                      >
+                        {municipality.name}
+                      </button>
+                    ))}
                   </div>
-                  <div className="w-1/2">
+                )}
+
+                {/* Destination / Out / Due back column header, like the mockup */}
+                <div
+                  className="grid grid-cols-[minmax(220px,1fr)_170px_170px] text-xs font-semibold uppercase"
+                  style={{ background: "var(--surface-2)", borderBottom: "0.5px solid var(--border-strong)", color: "var(--text-secondary)" }}
+                >
+                  <div className="p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>Destination</div>
+                  <div className="p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>Out</div>
+                  <div className="p-2">Due back</div>
+                </div>
+
+                {/* Primary destination row — province first, then city */}
+                <div
+                  className="grid grid-cols-[minmax(220px,1fr)_170px_170px] items-start"
+                  style={{ borderBottom: "0.5px solid var(--border-strong)" }}
+                >
+                  <div className="space-y-1.5 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                    <SearchableSelect
+                      value={destinationProvinceId}
+                      onChange={handleDestinationProvinceChange}
+                      options={provinceOptions}
+                      placeholder="Search for a province…"
+                    />
+                    <SearchableSelect
+                      value={destinationCityId}
+                      onChange={setDestinationCityId}
+                      options={destinationMunicipalityOptions}
+                      placeholder={destinationProvinceId ? "City/municipality (optional)" : "Pick a province first"}
+                    />
+                  </div>
+                  <div className="space-y-1 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                    <DatePicker value={startDate} onChange={setStartDate} settings={settings} />
                     <TimePicker value={startTime} onChange={setStartTime} settings={settings} />
                   </div>
-                </div>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm" style={labelStyle}>Due back</label>
-                <div className="flex gap-2">
-                  <div className="w-1/2">
+                  <div className="space-y-1 p-2">
                     <DatePicker value={endDate} onChange={setEndDate} settings={settings} />
-                  </div>
-                  <div className="w-1/2">
                     <TimePicker value={endTime} onChange={setEndTime} settings={settings} />
+                    {dateOrderInvalid ? (
+                      <p className="text-xs" style={{ color: "var(--text-danger)" }}>Must be after Out.</p>
+                    ) : durationText ? (
+                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                        {durationText}
+                        {exactDurationText && ` · ${exactDurationText}`}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
-              </div>
-            </div>
-          </FormQuestion>
 
-          <FormQuestion label="Payment">
-            <div className="flex flex-col gap-4 sm:flex-row">
-              <div className="sm:w-1/2">
-                <input
-                  className="w-full rounded-md px-3 py-2.5 text-base"
-                  style={inputStyle}
-                  placeholder="Amount collected"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                />
-                {resolvedRate?.basis === "custom" && (
-                  <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-                    Custom rate applies for this city ({resolvedRate.band?.label}): {resolvedRate.rate}
+                {/* Extra stops, if any — each leg's Out is the previous
+                    stop's Due back (read-only, muted), only its own Due
+                    back is editable. */}
+                {legs.map((leg, i) => {
+                  const legMunicipalityOptions = municipalities
+                    .filter((m) => m.province_id === leg.destinationProvinceId)
+                    .map((m) => ({ value: m.id, label: m.name }));
+                  const dt = legDateTimes[i];
+                  const legInvalid = Boolean(dt.endDT && dt.startDT && dt.endDT.getTime() <= dt.startDT.getTime());
+                  return (
+                    <div
+                      key={i}
+                      className="grid grid-cols-[minmax(220px,1fr)_170px_170px] items-start"
+                      style={{ borderBottom: "0.5px solid var(--border-strong)" }}
+                    >
+                      <div className="space-y-1.5 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
+                            Destination {i + 2}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeLeg(i)}
+                            className="text-xs"
+                            style={{ color: "var(--text-danger)" }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <SearchableSelect
+                          value={leg.destinationProvinceId}
+                          onChange={(v) => updateLeg(i, { destinationProvinceId: v, destinationCityId: "" })}
+                          options={provinceOptions}
+                          placeholder="Search for a province…"
+                        />
+                        <SearchableSelect
+                          value={leg.destinationCityId}
+                          onChange={(v) => updateLeg(i, { destinationCityId: v })}
+                          options={legMunicipalityOptions}
+                          placeholder={leg.destinationProvinceId ? "City/municipality (optional)" : "Pick a province first"}
+                        />
+                        <input
+                          className="w-full rounded-md px-3 py-2 text-sm"
+                          style={inputStyle}
+                          placeholder="Note (optional)"
+                          value={leg.note}
+                          onChange={(e) => updateLeg(i, { note: e.target.value })}
+                        />
+                      </div>
+                      <div className="p-2 text-sm" style={{ borderRight: "0.5px solid var(--border-strong)", color: "var(--text-muted)" }}>
+                        {dt.startDT ? formatDateTime(dt.startDT.toISOString(), settings) : "—"}
+                      </div>
+                      <div className="space-y-1 p-2">
+                        <DatePicker value={leg.endDate} onChange={(v) => updateLeg(i, { endDate: v })} settings={settings} />
+                        <TimePicker value={leg.endTime} onChange={(v) => updateLeg(i, { endTime: v })} settings={settings} />
+                        {legInvalid && (
+                          <p className="text-xs" style={{ color: "var(--text-danger)" }}>Must be after this stop's start.</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Note</div>
+                  <input
+                    className="w-full rounded-md px-3 py-2 text-base"
+                    style={inputStyle}
+                    placeholder="Optional — pickup point, gate code, contact, etc."
+                    value={destinationNote}
+                    onChange={(e) => setDestinationNote(e.target.value)}
+                  />
+                </div>
+
+                <div className="flex justify-end p-2.5">
+                  <button
+                    type="button"
+                    onClick={addLeg}
+                    className="rounded-md px-4 py-2 text-sm font-bold uppercase tracking-wide"
+                    style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+                  >
+                    + Add destination
+                  </button>
+                </div>
+              </>
+            )}
+
+            {step === 3 && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                    <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Paid / AR</div>
+                    <input
+                      className="w-full rounded-md px-3 py-2 text-base"
+                      style={inputStyle}
+                      placeholder={notYetPaid ? "Amount agreed (not yet collected)" : "Amount collected"}
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                    />
+                    <label className="mt-1.5 flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={notYetPaid}
+                        onChange={(e) => setNotYetPaid(e.target.checked)}
+                      />
+                      Customer hasn't paid yet (Receivable / AR)
+                    </label>
+                  </div>
+                  <div className="p-2.5">
+                    <div className="mb-1 text-xs font-semibold uppercase italic" style={labelStyle}>Expected</div>
+                    {settings.showExpectedPayment && combinedExpectedPayment !== null ? (
+                      <p className="text-base italic" style={{ color: "var(--text-primary)" }}>
+                        {formatMoney(combinedExpectedPayment)}
+                        {resolvedRate?.basis === "matrix"
+                          ? ` (Tier ${resolvedRate.tier} · ${resolvedRate.band?.label})`
+                          : ""}
+                        {legs.length > 0 ? ` — ${legs.length + 1} destinations` : ""}
+                      </p>
+                    ) : (
+                      <p className="text-base italic" style={{ color: "var(--text-muted)" }}>—</p>
+                    )}
+                    {resolvedRate?.basis === "custom" && (
+                      <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                        Custom rate for this city ({resolvedRate.band?.label}): {resolvedRate.rate}
+                      </p>
+                    )}
+                    {resolvedRate?.basis === "vehicle" && (
+                      <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                        No Rate Matrix match — using this vehicle's own rate: {resolvedRate.rate}
+                      </p>
+                    )}
+                    <div className="mt-1.5">
+                      <RateMatrixPanel band={selectedBand} row={matrixRow} activeTier={activeTier} />
+                    </div>
+                  </div>
+                </div>
+                <div className="p-2.5">
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Purpose</div>
+                  <select
+                    className="w-full rounded-md px-3 py-2 text-base sm:w-1/3"
+                    style={inputStyle}
+                    value={purpose}
+                    onChange={(e) => setPurpose(e.target.value)}
+                  >
+                    {PURPOSE_OPTIONS.map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            {step === 4 && (
+              <>
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Vehicle</div>
+                  <p className="text-base" style={{ color: "var(--text-primary)" }}>
+                    {vehicleId ? vehicleLabel(vehicleId) : "—"}
                   </p>
-                )}
-                {resolvedRate?.basis === "vehicle" && (
-                  <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-                    No Rate Matrix match — using this vehicle's own rate: {resolvedRate.rate}
+                  {(fuelLevel.trim() || odometerKm.trim()) && (
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                      {fuelLevel.trim() && `Fuel: ${fuelLevel} ${settings.fuelUnit === "bars" ? "bars" : "L"}`}
+                      {fuelLevel.trim() && odometerKm.trim() && " · "}
+                      {odometerKm.trim() && `Odometer: ${odometerKm} km`}
+                    </p>
+                  )}
+                </div>
+
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Customer</div>
+                  <p className="text-base" style={{ color: "var(--text-primary)" }}>
+                    {isNewCustomer ? newCustomerName.trim() || "—" : customerLabel(customerId)}
                   </p>
-                )}
-                {settings.showExpectedPayment && expectedPayment !== null && (
-                  <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-                    Expected payment: {formatMoney(expectedPayment)}
-                    {resolvedRate?.basis === "matrix"
-                      ? ` (Tier ${resolvedRate.tier} · ${resolvedRate.band?.label})`
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                    {newCustomerPhone.trim() || "No phone on file"}
+                    {profileAddressLine.trim() || profileAddressProvinceId
+                      ? ` · ${[profileAddressLine.trim(), provinceCityLabel(profileAddressProvinceId, profileAddressMunicipalityId)]
+                          .filter((part) => part && part !== "—")
+                          .join(", ")}`
                       : ""}
                   </p>
-                )}
-              </div>
-              <div className="sm:w-1/2">
-                <RateMatrixPanel band={selectedBand} row={matrixRow} activeTier={activeTier} />
-              </div>
-            </div>
-          </FormQuestion>
+                </div>
 
-          <FormQuestion label="Purpose (optional)">
-            <select
-              className="w-full rounded-md px-3 py-2.5 text-base sm:w-1/2"
-              style={inputStyle}
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-            >
-              {PURPOSE_OPTIONS.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </FormQuestion>
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Destination</div>
+                  <p className="text-base" style={{ color: "var(--text-primary)" }}>
+                    {provinceCityLabel(destinationProvinceId, destinationCityId)}
+                    {startDT && endDT
+                      ? ` — ${formatDateTime(startDT.toISOString(), settings)} to ${formatDateTime(endDT.toISOString(), settings)}`
+                      : ""}
+                  </p>
+                  {destinationNote.trim() && (
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>Note: {destinationNote}</p>
+                  )}
+                  {legs.map((leg, i) => {
+                    const dt = legDateTimes[i];
+                    return (
+                      <p key={i} className="text-base" style={{ color: "var(--text-primary)" }}>
+                        → {provinceCityLabel(leg.destinationProvinceId, leg.destinationCityId)}
+                        {dt.endDT ? ` — until ${formatDateTime(dt.endDT.toISOString(), settings)}` : ""}
+                      </p>
+                    );
+                  })}
+                </div>
 
-          <div className="flex justify-start">
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="rounded-md px-6 py-2.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
-              style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
-            >
-              Save booking
-            </button>
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Payment</div>
+                  <p className="text-base" style={{ color: "var(--text-primary)" }}>
+                    {notYetPaid ? "Receivable — not yet paid" : "Paid"}
+                    {paymentAmount.trim() ? ` · ${paymentAmount}` : ""}
+                  </p>
+                  {settings.showExpectedPayment && combinedExpectedPayment !== null && (
+                    <p className="text-sm italic" style={{ color: "var(--text-muted)" }}>
+                      Expected: {formatMoney(combinedExpectedPayment)}
+                    </p>
+                  )}
+                </div>
+
+                <div className="p-2.5">
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Purpose</div>
+                  <p className="text-base" style={{ color: "var(--text-primary)" }}>{purpose}</p>
+                </div>
+              </>
+            )}
           </div>
-        </form>
+
+          <div className="mt-3 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setStep((s) => Math.max(0, s - 1))}
+              disabled={step === 0}
+              className="rounded-md px-5 py-2.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ background: "var(--surface-2)", color: "var(--text-secondary)" }}
+            >
+              Back
+            </button>
+            {step < STEPS.length - 1 ? (
+              <button
+                type="button"
+                onClick={() => setStep((s) => Math.min(STEPS.length - 1, s + 1))}
+                disabled={!stepValid[step]}
+                className="rounded-md px-6 py-2.5 text-base font-bold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-40"
+                style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+              >
+                Next
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="rounded-md px-6 py-2.5 text-base font-bold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-40"
+                style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
+              >
+                Save booking
+              </button>
+            )}
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showDiscardConfirm && (
+        <ConfirmDialog
+          title="Discard this booking?"
+          description="What you've entered so far — vehicle, customer, destination, everything — will be lost. This can't be undone."
+          confirmLabel="Discard"
+          onConfirm={() => {
+            setShowDiscardConfirm(false);
+            resetForm();
+          }}
+          onCancel={() => setShowDiscardConfirm(false)}
+        />
       )}
 
       {loading ? (
@@ -940,9 +1639,13 @@ function RateMatrixPanel({
   activeTier: Tier | null;
 }) {
   if (!band) {
+    // No h-full/min-height here on purpose — this now sits stacked below the
+    // Payment fields (not side-by-side with them), so it should only take up
+    // as much room as its own one-line message needs, not reserve empty
+    // space to match some other column's height.
     return (
       <div
-        className="flex h-full min-h-[7.5rem] items-center rounded-md p-3 text-sm"
+        className="rounded-md p-2.5 text-sm"
         style={{ background: "var(--surface-2)", color: "var(--text-muted)" }}
       >
         Select a vehicle to see its rate matrix.

@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showRemittanceSummary: true,
   remittancePaymentColor: "#3b82f6",
   remittanceExpectedOpacity: 50,
+  fuelUnit: "bars",
   autoMarkDeparted: true,
   showLuzon: true,
   showVisayas: true,
@@ -31,6 +32,7 @@ interface SettingsRow {
   showRemittanceSummary: number;
   remittancePaymentColor: string;
   remittanceExpectedOpacity: number;
+  fuelUnit: string;
   autoMarkDeparted: number;
   showLuzon: number;
   showVisayas: number;
@@ -50,6 +52,7 @@ function toAppSettings(row: SettingsRow): AppSettings {
     showRemittanceSummary: row.showRemittanceSummary === 1,
     remittancePaymentColor: row.remittancePaymentColor,
     remittanceExpectedOpacity: row.remittanceExpectedOpacity,
+    fuelUnit: row.fuelUnit as AppSettings["fuelUnit"],
     autoMarkDeparted: row.autoMarkDeparted === 1,
     showLuzon: row.showLuzon === 1,
     showVisayas: row.showVisayas === 1,
@@ -67,6 +70,7 @@ export async function getSettings(): Promise<AppSettings> {
             show_remittance_summary as showRemittanceSummary,
             remittance_payment_color as remittancePaymentColor,
             remittance_expected_opacity as remittanceExpectedOpacity,
+            fuel_unit as fuelUnit,
             auto_mark_departed as autoMarkDeparted,
             show_luzon as showLuzon, show_visayas as showVisayas, show_mindanao as showMindanao
      from app_settings where id = 1`,
@@ -90,7 +94,7 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
     `update app_settings
      set date_format = ?, time_format = ?, duration_display = ?, show_expected_payment = ?,
          dash_label_unit = ?, dash_label_lessee = ?, dash_label_etd = ?, dash_label_eta = ?,
-         show_remittance_summary = ?, remittance_payment_color = ?, remittance_expected_opacity = ?,
+         show_remittance_summary = ?, remittance_payment_color = ?, remittance_expected_opacity = ?, fuel_unit = ?,
          auto_mark_departed = ?, show_luzon = ?, show_visayas = ?, show_mindanao = ?
      where id = 1`,
     [
@@ -105,6 +109,7 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       next.showRemittanceSummary ? 1 : 0,
       next.remittancePaymentColor,
       next.remittanceExpectedOpacity,
+      next.fuelUnit,
       next.autoMarkDeparted ? 1 : 0,
       next.showLuzon ? 1 : 0,
       next.showVisayas ? 1 : 0,

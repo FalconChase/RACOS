@@ -32,6 +32,7 @@ function App() {
   const [ready, setReady] = useState(false);
   const [pendingSync, setPendingSync] = useState(0);
   const [checkoutBookingId, setCheckoutBookingId] = useState<string | null>(null);
+  const [autoOpenBooking, setAutoOpenBooking] = useState(false);
   const [auth, setAuth] = useState<AuthState>({ status: "checking" });
 
   async function runBootstrap() {
@@ -75,6 +76,15 @@ function App() {
   function goToTab(next: Tab) {
     setCheckoutBookingId(null);
     setTab(next);
+  }
+
+  // Home's "Record booking" shortcut — jumps straight to Rentals with the
+  // New rental wizard already open, instead of landing on the tab and
+  // requiring a second click there.
+  function openNewRental() {
+    setCheckoutBookingId(null);
+    setTab("bookings");
+    setAutoOpenBooking(true);
   }
 
   if (auth.status === "checking") {
@@ -128,9 +138,7 @@ function App() {
             />
           ) : (
             <>
-              {tab === "home" && (
-                <HomeScreen onNavigate={goToTab} onWalkInCheckout={() => goToTab("bookings")} />
-              )}
+              {tab === "home" && <HomeScreen onRecordBooking={openNewRental} />}
               {tab === "vehicles" && (
                 <VehiclesScreen
                   onNavigateToRegistry={() => goToTab("registry")}
@@ -139,7 +147,11 @@ function App() {
               )}
               {tab === "customers" && <CustomersScreen />}
               {tab === "bookings" && (
-                <BookingsScreen onCheckout={(id) => setCheckoutBookingId(id)} />
+                <BookingsScreen
+                  onCheckout={(id) => setCheckoutBookingId(id)}
+                  autoOpenForm={autoOpenBooking}
+                  onAutoOpenConsumed={() => setAutoOpenBooking(false)}
+                />
               )}
               {tab === "rateMatrix" && <RateMatrixScreen />}
               {tab === "registry" && <RegistryScreen />}

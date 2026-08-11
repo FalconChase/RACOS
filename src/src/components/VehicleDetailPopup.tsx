@@ -111,10 +111,13 @@ export default function VehicleDetailPopup({ vehicle, ownerLabel, onClose }: Veh
             <div className="min-w-0 flex-1">
               <DetailRow label="Make" value={vehicle.make ?? "—"} />
               <DetailRow label="Model" value={vehicle.model ?? "—"} />
+              <DetailRow label="Description" value={vehicle.description ?? "—"} />
               <DetailRow label="Year" value={vehicle.year != null ? String(vehicle.year) : "—"} />
+              <DetailRow label="Color" value={vehicle.color ?? "—"} />
               <DetailRow label="Seating" value={vehicle.seats != null ? String(vehicle.seats) : "—"} />
               <DetailRow label="Fuel" value={vehicle.fuel ?? "—"} />
               <DetailRow label="Fuel capacity" value={vehicle.fuel_capacity ?? "—"} />
+              <DetailRow label="Max fuel level" value={vehicle.fuel_max_level != null ? String(vehicle.fuel_max_level) : "—"} />
               <DetailRow label="Engine" value={vehicle.engine_number ?? "—"} />
               <DetailRow label="Transmission" value={vehicle.transmission ?? "—"} />
               <DetailRow
@@ -122,6 +125,7 @@ export default function VehicleDetailPopup({ vehicle, ownerLabel, onClose }: Veh
                 value={vehicle.gps_device_id ? `${vehicle.gps_device_id}${vehicle.gps_provider ? ` (${vehicle.gps_provider})` : ""}` : "Not set"}
               />
               <DetailRow label="Owner" value={ownerLabel} />
+              <DetailRow label="Notes" value={vehicle.notes ?? "—"} />
             </div>
           </div>
 

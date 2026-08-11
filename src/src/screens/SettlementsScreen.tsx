@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { correctBookingPayment, listBookings } from "../lib/repo/bookings";
+import { correctBookingPayment, listBookings, markBookingPaid } from "../lib/repo/bookings";
+import { listAllBookingLegs } from "../lib/repo/bookingLegs";
 import { listVehicles } from "../lib/repo/vehicles";
 import { listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
@@ -7,12 +8,13 @@ import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/r
 import { useSettings } from "../lib/settingsContext";
 import { formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatHHMM, formatHoursAsHHMM, roundToNearestHalfHour } from "../lib/duration";
-import { computeExpectedPayment, resolveBookingRate } from "../lib/pricing";
+import { computeExpectedPayment, computeMultiLegExpectedPayment, resolveBookingRate } from "../lib/pricing";
 import { bookingRef } from "../lib/bookingRef";
 import { destinationLabel } from "../lib/destinationLabel";
 import RemittancesReport from "./RemittancesReport";
 import type {
   Booking,
+  BookingLeg,
   BookingStatus,
   BusinessProfile,
   Customer,
@@ -74,13 +76,14 @@ export default function SettlementsScreen() {
   const [rateMatrix, setRateMatrix] = useState<RateMatrixRow[]>([]);
   const [customRates, setCustomRates] = useState<CustomRate[]>([]);
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
+  const [bookingLegs, setBookingLegs] = useState<BookingLeg[]>([]);
   const [loading, setLoading] = useState(true);
   // Only one row at a time can have its Payment being corrected — see
   // PaymentEditRow below.
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
 
   async function refresh() {
-    const [b, v, c, p, profile, bands, matrix, customRts, munis] = await Promise.all([
+    const [b, v, c, p, profile, bands, matrix, customRts, munis, legs] = await Promise.all([
       listBookings(),
       listVehicles(),
       listCustomers(),
@@ -90,6 +93,7 @@ export default function SettlementsScreen() {
       listRateMatrix(),
       listCustomRates(),
       listMunicipalities(),
+      listAllBookingLegs(),
     ]);
     setBookings(b);
     setVehicles(v);
@@ -100,6 +104,7 @@ export default function SettlementsScreen() {
     setRateMatrix(matrix);
     setCustomRates(customRts);
     setMunicipalities(munis);
+    setBookingLegs(legs);
     setLoading(false);
   }
 
@@ -114,6 +119,11 @@ export default function SettlementsScreen() {
     return customers.find((c) => c.id === id)?.full_name ?? "—";
   }
 
+  async function handleMarkPaid(id: string) {
+    await markBookingPaid(id);
+    await refresh();
+  }
+
   function rowRate(booking: Booking): number | null {
     return resolveBookingRate(booking, vehicles, businessProfile, provinces, seatingBands, rateMatrix, customRates);
   }
@@ -122,6 +132,18 @@ export default function SettlementsScreen() {
   // bookings are excluded here since they never actually settled anything
   // and already have a home in Rentals > History.
   const rows = useMemo(() => bookings.filter((b) => b.status !== "cancelled"), [bookings]);
+
+  // Grouped once per bookingLegs change rather than filtering per row — same
+  // pattern as logsByBooking on BookingsScreen.
+  const legsByBooking = useMemo(() => {
+    const map = new Map<string, BookingLeg[]>();
+    for (const leg of bookingLegs) {
+      const list = map.get(leg.booking_id) ?? [];
+      list.push(leg);
+      map.set(leg.booking_id, list);
+    }
+    return map;
+  }, [bookingLegs]);
 
   return (
     <div className="space-y-4">
@@ -189,8 +211,27 @@ export default function SettlementsScreen() {
                 const totalTime = settled ? formatHoursAsHHMM(durationHours + overtimeHours) : "—";
 
                 const rate = rowRate(b);
+                const legs = legsByBooking.get(b.id) ?? [];
+                const vehicle = vehicles.find((v) => v.id === b.vehicle_id) ?? null;
+                // Multi-destination bookings price the scheduled span as the
+                // sum of each stop's own rate x its own duration (see
+                // computeMultiLegExpectedPayment), rather than one rate over
+                // the whole span. Overtime (past the last stop's due-back)
+                // still bills at the primary destination's rate — a known,
+                // deliberately simplified corner, same spirit as
+                // RemittancesReport's block-breakdown limitation. The
+                // single-destination case (the overwhelming majority) is
+                // untouched: same one-call-rounded math as before.
+                const multiLegRecorded =
+                  settled && legs.length > 0 && vehicle
+                    ? computeMultiLegExpectedPayment(b, legs, vehicle, businessProfile, provinces, seatingBands, rateMatrix, customRates)
+                    : null;
                 const recomputedExpected =
-                  settled && rate != null ? computeExpectedPayment(rate, durationHours + overtimeHours) : null;
+                  multiLegRecorded != null
+                    ? multiLegRecorded + (settled && overtimeHours > 0 && rate != null ? computeExpectedPayment(rate, overtimeHours) ?? 0 : 0)
+                    : settled && rate != null
+                      ? computeExpectedPayment(rate, durationHours + overtimeHours)
+                      : null;
                 const expectedPaymentText =
                   recomputedExpected != null ? formatMoney(recomputedExpected) : b.expected_payment ?? "—";
 
@@ -198,7 +239,8 @@ export default function SettlementsScreen() {
                 // exceed — see PaymentEditRow. Split out from the combined
                 // recomputedExpected above the same way RemittancesReport's
                 // buildBookingSummary does.
-                const recordedExpected = settled && rate != null ? computeExpectedPayment(rate, durationHours) : null;
+                const recordedExpected =
+                  multiLegRecorded ?? (settled && rate != null ? computeExpectedPayment(rate, durationHours) : null);
                 const overtimeExpected =
                   settled && overtimeHours > 0 && rate != null ? computeExpectedPayment(rate, overtimeHours) : null;
 
@@ -278,20 +320,42 @@ export default function SettlementsScreen() {
                       style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}
                       title={rate != null ? `Rate: ${formatMoney(rate)}` : undefined}
                     >
-                      {destinationLabel(b, provinces, municipalities)}
+                      {destinationLabel(b, provinces, municipalities, legs)}
                     </td>
                     <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>
                       {expectedPaymentText}
                     </td>
                     <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>
-                      {paymentTotal != null ? formatMoney(paymentTotal) : "—"}
-                      {additionalPayment != null && (
-                        <div className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
-                          incl. {formatMoney(additionalPayment)} overtime
-                        </div>
+                      {b.payment_status === "receivable" ? (
+                        <>
+                          <span style={{ color: "var(--text-warning)" }}>Receivable — not yet paid</span>
+                          {paymentTotal != null && (
+                            <div className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                              agreed: {formatMoney(paymentTotal)}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {paymentTotal != null ? formatMoney(paymentTotal) : "—"}
+                          {additionalPayment != null && (
+                            <div className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                              incl. {formatMoney(additionalPayment)} overtime
+                            </div>
+                          )}
+                        </>
                       )}
                       {settled && (
-                        <div className="mt-1">
+                        <div className="mt-1 flex gap-3">
+                          {b.payment_status === "receivable" && (
+                            <button
+                              onClick={() => handleMarkPaid(b.id)}
+                              className="text-sm font-medium"
+                              style={{ color: "var(--text-success)" }}
+                            >
+                              Mark as paid
+                            </button>
+                          )}
                           <button
                             onClick={() => setEditingPaymentId(b.id)}
                             className="text-sm font-medium"

@@ -1,9 +1,10 @@
 import { useState } from "react";
 import OdometerLogTab from "./OdometerLogTab";
 import GpsLogTab from "./GpsLogTab";
+import FuelLevelTab from "./FuelLevelTab";
 import EntriesReportsTab from "./EntriesReportsTab";
 
-type EntriesSubtab = "odometer" | "gps" | "reports";
+type EntriesSubtab = "odometer" | "gps" | "fuel" | "reports";
 
 // ROP011 — Tools > Entries. Same subtab-bar pattern as ToolsScreen itself
 // (Car Activity/Logs) and Rentals/Settlements before it.
@@ -17,6 +18,7 @@ export default function EntriesScreen() {
           [
             { id: "odometer", label: "Odometer Log" },
             { id: "gps", label: "GPS Log" },
+            { id: "fuel", label: "Fuel Level" },
             { id: "reports", label: "Reports" },
           ] as { id: EntriesSubtab; label: string }[]
         ).map((t) => (
@@ -37,6 +39,7 @@ export default function EntriesScreen() {
 
       {subtab === "odometer" && <OdometerLogTab />}
       {subtab === "gps" && <GpsLogTab />}
+      {subtab === "fuel" && <FuelLevelTab />}
       {subtab === "reports" && <EntriesReportsTab />}
     </div>
   );

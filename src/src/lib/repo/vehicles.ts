@@ -41,6 +41,10 @@ export interface NewVehicleInput {
   transmission?: string;
   car_image?: string;
   car_image_fit?: VehicleImageFit;
+  notes?: string;
+  color?: string;
+  description?: string;
+  fuel_max_level?: number;
 }
 
 export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
@@ -73,6 +77,13 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
     transmission: input.transmission ?? null,
     car_image: input.car_image ?? null,
     car_image_fit: input.car_image_fit ?? "cover",
+    notes: input.notes ?? null,
+    color: input.color ?? null,
+    description: input.description ?? null,
+    // Defaults to 6 bars unless a value came through explicitly — most
+    // gauges use that scale, and this is only ever adjusted afterward from
+    // the Registry Vehicles edit row, not asked at intake.
+    fuel_max_level: input.fuel_max_level ?? 6,
     created_at: now,
     updated_at: now,
   };
@@ -81,8 +92,8 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
     `insert into vehicles
        (id, business_id, plate_number, make, model, year, status, daily_rate, seats, owner_id,
         chassis_number, engine_number, gps_device_id, gps_provider, gps_notes,
-        fuel, fuel_capacity, transmission, car_image, car_image_fit, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        fuel, fuel_capacity, transmission, car_image, car_image_fit, notes, color, description, fuel_max_level, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       vehicle.id,
       vehicle.business_id,
@@ -104,6 +115,10 @@ export async function createVehicle(input: NewVehicleInput): Promise<Vehicle> {
       vehicle.transmission,
       vehicle.car_image,
       vehicle.car_image_fit,
+      vehicle.notes,
+      vehicle.color,
+      vehicle.description,
+      vehicle.fuel_max_level,
       vehicle.created_at,
       vehicle.updated_at,
     ],
@@ -134,6 +149,10 @@ export interface UpdateVehicleInput {
   transmission?: string | null;
   car_image?: string | null;
   car_image_fit?: VehicleImageFit;
+  notes?: string | null;
+  color?: string | null;
+  description?: string | null;
+  fuel_max_level?: number | null;
 }
 
 const VEHICLE_FIELD_LABELS: Record<keyof UpdateVehicleInput, string> = {
@@ -153,6 +172,10 @@ const VEHICLE_FIELD_LABELS: Record<keyof UpdateVehicleInput, string> = {
   transmission: "Transmission",
   car_image: "Car image",
   car_image_fit: "Car image fit",
+  notes: "Notes",
+  color: "Color",
+  description: "Description",
+  fuel_max_level: "Max fuel level",
 };
 
 export async function updateVehicle(id: string, patch: UpdateVehicleInput): Promise<Vehicle> {
@@ -189,7 +212,8 @@ export async function updateVehicle(id: string, patch: UpdateVehicleInput): Prom
     `update vehicles
         set plate_number = ?, make = ?, model = ?, year = ?, seats = ?, owner_id = ?,
             chassis_number = ?, engine_number = ?, gps_device_id = ?, gps_provider = ?, gps_notes = ?,
-            fuel = ?, fuel_capacity = ?, transmission = ?, car_image = ?, car_image_fit = ?,
+            fuel = ?, fuel_capacity = ?, transmission = ?, car_image = ?, car_image_fit = ?, notes = ?,
+            color = ?, description = ?, fuel_max_level = ?,
             updated_at = ?
       where id = ?`,
     [
@@ -209,6 +233,10 @@ export async function updateVehicle(id: string, patch: UpdateVehicleInput): Prom
       next.transmission,
       next.car_image,
       next.car_image_fit,
+      next.notes,
+      next.color,
+      next.description,
+      next.fuel_max_level,
       next.updated_at,
       id,
     ],

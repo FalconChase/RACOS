@@ -226,6 +226,72 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0036_remittance_expected_opacity.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 37,
+            description: "action_log_customer_entity",
+            sql: include_str!("../migrations/0037_action_log_customer_entity.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 38,
+            description: "customer_address",
+            sql: include_str!("../migrations/0038_customer_address.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 39,
+            description: "booking_payment_status",
+            sql: include_str!("../migrations/0039_booking_payment_status.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 40,
+            description: "fuel_level_entries",
+            sql: include_str!("../migrations/0040_fuel_level_entries.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 41,
+            description: "fuel_unit_setting",
+            sql: include_str!("../migrations/0041_fuel_unit_setting.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 42,
+            description: "booking_legs",
+            sql: include_str!("../migrations/0042_booking_legs.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 43,
+            description: "booking_destination_note",
+            sql: include_str!("../migrations/0043_booking_destination_note.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 44,
+            description: "vehicle_notes",
+            sql: include_str!("../migrations/0044_vehicle_notes.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 45,
+            description: "vehicle_color_and_description",
+            sql: include_str!("../migrations/0045_vehicle_color_and_description.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 46,
+            description: "vehicle_fuel_max_level",
+            sql: include_str!("../migrations/0046_vehicle_fuel_max_level.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 47,
+            description: "vehicle_fuel_max_level_default",
+            sql: include_str!("../migrations/0047_vehicle_fuel_max_level_default.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CalendarRangeIcon } from "./icons";
 import { formatDate } from "../lib/dateFormat";
 import type { AppSettings } from "../lib/types";
@@ -33,8 +34,18 @@ function parseValue(value: string): { year: number; month: number; day: number }
 // Custom calendar popup instead of the native input[type=date] — gives a
 // consistent picker across platforms rather than whatever the OS webview
 // happens to render.
+//
+// The calendar grid is portaled to document.body and positioned from the
+// anchor button's getBoundingClientRect, rather than laid out as a plain
+// `absolute` child — this used to only ever open on a normal page (fine to
+// overflow into document flow), but now can also open inside a capped-
+// height, scrollable dialog (BookingsScreen's New rental wizard), where an
+// `absolute` popup gets clipped by the dialog's own `overflow-y-auto`
+// instead of rendering past it.
 export default function DatePicker({ value, onChange, settings, highlightedDates }: DatePickerProps) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const anchorRef = useRef<HTMLButtonElement>(null);
   const today = new Date();
   const parsed = parseValue(value);
   const [viewYear, setViewYear] = useState(parsed?.year ?? today.getFullYear());
@@ -44,6 +55,8 @@ export default function DatePicker({ value, onChange, settings, highlightedDates
     const p = parseValue(value);
     setViewYear(p?.year ?? today.getFullYear());
     setViewMonth(p?.month ?? today.getMonth());
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (rect) setPos({ top: rect.bottom, left: rect.left });
     setOpen(true);
   }
 
@@ -79,6 +92,7 @@ export default function DatePicker({ value, onChange, settings, highlightedDates
   return (
     <div className="relative">
       <button
+        ref={anchorRef}
         type="button"
         onClick={() => (open ? setOpen(false) : openPicker())}
         className="flex w-full items-center justify-between gap-2 rounded-md px-3 py-2.5 text-left text-base"
@@ -92,64 +106,71 @@ export default function DatePicker({ value, onChange, settings, highlightedDates
         <CalendarRangeIcon size={17} />
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div
-            className="absolute left-0 top-full z-20 mt-1.5 w-72 rounded-md p-3"
-            style={{ background: "var(--surface-1)", border: "0.5px solid var(--border-strong)" }}
-          >
-            <div className="mb-2 flex items-center justify-between text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-              <button type="button" onClick={() => shiftMonth(-1)} className="rounded px-2 py-1" style={{ color: "var(--text-secondary)" }}>‹</button>
-              <span>{MONTH_NAMES[viewMonth]} {viewYear}</span>
-              <button type="button" onClick={() => shiftMonth(1)} className="rounded px-2 py-1" style={{ color: "var(--text-secondary)" }}>›</button>
-            </div>
-            <div className="grid grid-cols-7 gap-1 text-center text-xs" style={{ color: "var(--text-muted)" }}>
-              {WEEKDAYS.map((w) => (
-                <div key={w} className="py-1">{w}</div>
-              ))}
-            </div>
-            <div className="grid grid-cols-7 gap-1 text-center text-sm">
-              {cells.map((day, i) => {
-                if (day === null) return <div key={i} />;
-                const isSelected =
-                  parsed && parsed.year === viewYear && parsed.month === viewMonth && parsed.day === day;
-                const isToday =
-                  today.getFullYear() === viewYear && today.getMonth() === viewMonth && today.getDate() === day;
-                const dateStr = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
-                const isHighlighted = highlightedDates?.has(dateStr) ?? false;
+      {open &&
+        pos &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-50"
+              onClick={() => setOpen(false)}
+              onWheel={() => setOpen(false)}
+            />
+            <div
+              className="fixed z-[60] mt-1.5 w-72 rounded-md p-3"
+              style={{ top: pos.top, left: pos.left, background: "var(--surface-1)", border: "0.5px solid var(--border-strong)" }}
+            >
+              <div className="mb-2 flex items-center justify-between text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                <button type="button" onClick={() => shiftMonth(-1)} className="rounded px-2 py-1" style={{ color: "var(--text-secondary)" }}>‹</button>
+                <span>{MONTH_NAMES[viewMonth]} {viewYear}</span>
+                <button type="button" onClick={() => shiftMonth(1)} className="rounded px-2 py-1" style={{ color: "var(--text-secondary)" }}>›</button>
+              </div>
+              <div className="grid grid-cols-7 gap-1 text-center text-xs" style={{ color: "var(--text-muted)" }}>
+                {WEEKDAYS.map((w) => (
+                  <div key={w} className="py-1">{w}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1 text-center text-sm">
+                {cells.map((day, i) => {
+                  if (day === null) return <div key={i} />;
+                  const isSelected =
+                    parsed && parsed.year === viewYear && parsed.month === viewMonth && parsed.day === day;
+                  const isToday =
+                    today.getFullYear() === viewYear && today.getMonth() === viewMonth && today.getDate() === day;
+                  const dateStr = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
+                  const isHighlighted = highlightedDates?.has(dateStr) ?? false;
 
-                let cellStyle: React.CSSProperties;
-                if (isSelected) {
-                  cellStyle = { background: "var(--fill-primary)", color: "var(--on-primary)" };
-                } else {
-                  cellStyle = { color: "var(--text-primary)" };
-                  if (isHighlighted) {
-                    cellStyle.background = "var(--bg-warning)";
-                    cellStyle.color = "var(--text-warning)";
+                  let cellStyle: React.CSSProperties;
+                  if (isSelected) {
+                    cellStyle = { background: "var(--fill-primary)", color: "var(--on-primary)" };
+                  } else {
+                    cellStyle = { color: "var(--text-primary)" };
+                    if (isHighlighted) {
+                      cellStyle.background = "var(--bg-warning)";
+                      cellStyle.color = "var(--text-warning)";
+                    }
+                    if (isToday) {
+                      cellStyle.border = "0.5px solid var(--text-accent)";
+                    }
                   }
-                  if (isToday) {
-                    cellStyle.border = "0.5px solid var(--text-accent)";
-                  }
-                }
 
-                return (
-                  <button
-                    type="button"
-                    key={i}
-                    onClick={() => selectDay(day)}
-                    title={isHighlighted ? "Has booking activity" : undefined}
-                    className="rounded-md py-1.5"
-                    style={cellStyle}
-                  >
-                    {day}
-                  </button>
-                );
-              })}
+                  return (
+                    <button
+                      type="button"
+                      key={i}
+                      onClick={() => selectDay(day)}
+                      title={isHighlighted ? "Has booking activity" : undefined}
+                      className="rounded-md py-1.5"
+                      style={cellStyle}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        </>
-      )}
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

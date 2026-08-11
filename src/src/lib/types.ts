@@ -44,6 +44,20 @@ export interface Vehicle {
   fuel_capacity: string | null;
   transmission: string | null;
   car_image: string | null;
+  // Free-text notes — quirks, maintenance reminders, anything staff want on
+  // file. Same local-only spirit as the fields above (migration 0044).
+  notes: string | null;
+  // e.g. "White", "Silver". Same local-only spirit as the fields above
+  // (migration 0045).
+  color: string | null;
+  // Variant/trim descriptor, e.g. "1.3 XLE CVT" — distinct from model
+  // (which stays just "Vios"). Same local-only spirit (migration 0045).
+  description: string | null;
+  // Ceiling for fuel level entries against this vehicle — read against
+  // whatever settings.fuelUnit currently is (bars or liters) at entry
+  // time. Same local-only spirit (migration 0046); optional, so vehicles
+  // added before this or left blank simply skip the cap.
+  fuel_max_level: number | null;
   // How car_image fits the popup's square frame — "cover" crops to fill,
   // "contain" shrinks to show the whole image, letterboxed if needed. Set
   // alongside car_image on the Registry Vehicles edit form (see migration
@@ -98,7 +112,7 @@ export interface ActionLogEntry {
   // both removed (see BRAINS/RACOS.md ROD021): a tool letting an admin
   // bulk-wipe this business's own real history undermines RACOS's
   // transparency guarantees, even scoped to local data with an audit entry.
-  entity_type: "owner" | "vehicle" | "booking" | "system";
+  entity_type: "owner" | "vehicle" | "booking" | "system" | "customer";
   entity_id: string;
   entity_label: string;
   // "completed"/"cancelled"/"departed" are booking-only (cancelBooking,
@@ -126,6 +140,12 @@ export interface Customer {
   email: string | null;
   phone: string | null;
   license_number: string | null;
+  // Structured address — same shape as Owner's (province + municipality +
+  // free-text street line, same shared geo reference tables). Optional at
+  // intake, unlike Owner's; editable later from Customers.
+  address_province_id: string | null;
+  address_municipality_id: string | null;
+  address_line: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -152,6 +172,10 @@ export interface Booking {
   // Optional finer-grained destination — a specific registered city/municipality
   // within destination_province_id. Also what a custom rate override matches on.
   destination_city_id: string | null;
+  // Optional free-text note on the primary destination — a pickup point,
+  // gate code, contact person, etc. Purely informational, same spirit as
+  // purpose. Each extra leg (see BookingLeg) has its own independent note.
+  destination_note: string | null;
   // Free-form, display-only reason for the rental (e.g. Service, Events,
   // Vacation). Defaults to "Service" in the booking form. Never drives pricing
   // or any other logic — purely informational.
@@ -198,6 +222,18 @@ export interface Booking {
   // returned" when the confirmed arrival lands after end_date — null for
   // every on-time/early return.
   additional_payment: string | null;
+  // 'paid' (default) means payment_amount is money already collected, same
+  // as every booking before this existed. 'receivable' means payment_amount
+  // (if set) is the agreed amount, not yet actually collected — a rare,
+  // deliberate staff choice at booking time for a known/trusted customer.
+  // Remittances excludes a 'receivable' booking's amount from its totals
+  // and shows "Receivable" instead, until markBookingPaid flips this to
+  // 'paid' and stamps paid_at.
+  payment_status: "paid" | "receivable";
+  // When the booking was actually marked paid — null while payment_status
+  // is 'receivable'. Separate from created_at, which only ever captures
+  // when the booking itself was logged, not when money came in.
+  paid_at: string | null;
   // Per-booking choice of which Remittances block math to use once the
   // report's Split is set to "Hybrid" — 'bucket' or 'recorded' (see
   // RemittancesReport.tsx). Null means unset, and Hybrid treats that the
@@ -205,6 +241,29 @@ export interface Booking {
   remittance_split_override: "bucket" | "recorded" | null;
   created_at: string;
   updated_at: string;
+}
+
+// An extra stop beyond a booking's own primary destination (bookings.
+// destination_province_id/city_id) — see 0042_booking_legs.sql. Continuous
+// with the leg before it: this leg's start_at is always the previous leg's
+// end_at (or the booking's own end_date for the first extra leg). Only ever
+// created alongside the booking itself — no edit/remove path once saved.
+export interface BookingLeg {
+  id: string;
+  business_id: string;
+  booking_id: string;
+  // 1-indexed among a booking's *extra* legs — the primary destination
+  // itself isn't a row here, so sequence 1 is the first stop after it.
+  sequence: number;
+  destination_province_id: string | null;
+  destination_city_id: string | null;
+  note: string | null;
+  start_at: string;
+  end_at: string;
+  // Same pattern as Booking.resolved_rate — this leg's own destination's
+  // rate, locked in at creation time.
+  resolved_rate: string | null;
+  created_at: string;
 }
 
 // Device-level preference (app_settings table), not tenant data — not synced.
@@ -241,6 +300,11 @@ export interface AppSettings {
   // text color with this layered on top, not a separate hardcoded color —
   // see RemittancesReport.tsx. 50 by default.
   remittanceExpectedOpacity: number;
+  // Business-wide default for how fuel level is logged (Tools > Entries) —
+  // a fleet typically reads gauges the same way. Each FuelLevelEntry still
+  // snapshots its own unit at save time, so changing this later never
+  // misreads an old entry.
+  fuelUnit: "bars" | "liters";
   // On by default — a still-"pending" booking gets auto-confirmed as
   // departed (see AutoDepartureRunner) once its scheduled start_date
   // passes, instead of waiting on staff to click Mark departed. Turning
@@ -366,6 +430,24 @@ export interface MileageEntry {
   mileage_km: number;
   period_start: string; // YYYY-MM-DD
   period_end: string; // YYYY-MM-DD
+  recorded_at: string;
+  recorded_by_role: RecordedByRole;
+  recorded_by_id: string;
+  recorded_by_label: string;
+  note: string | null;
+}
+
+// Same append-only/two-timestamp shape as OdometerReading — a fuel gauge
+// reading instead of an odometer one. unit is snapshotted per entry (not
+// read live off AppSettings.fuelUnit at display time), so changing the
+// business's default later never misreads an old entry.
+export interface FuelLevelEntry {
+  id: string;
+  business_id: string;
+  vehicle_id: string;
+  level: number;
+  unit: "bars" | "liters";
+  reading_at: string;
   recorded_at: string;
   recorded_by_role: RecordedByRole;
   recorded_by_id: string;
