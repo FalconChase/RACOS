@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { cancelBooking, createBooking, getTopDestinations, listBookings, markBookingDeparted, markBookingReturned, updateBookingTimes } from "../lib/repo/bookings";
+import { cancelBooking, createBooking, getTopDestinations, listBookings, markBookingDeparted, markBookingReturned, updateAgreementExecutedAt, updateBookingTimes } from "../lib/repo/bookings";
 import type { BookingTimeUpdate, CancellationReason, TopDestination } from "../lib/repo/bookings";
 import { createFuelLevelEntry } from "../lib/repo/fuelLevelEntries";
 import { createOdometerReading } from "../lib/repo/odometerReadings";
@@ -10,21 +10,29 @@ import { listCustomRates, listRateMatrix, listSeatingBands } from "../lib/repo/r
 import { listActionLogsByType } from "../lib/repo/actionLog";
 import { bookingRef } from "../lib/bookingRef";
 import { useSettings } from "../lib/settingsContext";
-import { formatDateTime } from "../lib/dateFormat";
+import { formatDate, formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatDuration, formatHoursMinutes } from "../lib/duration";
 import { computeTier, findSeatingBand, resolveBookingRate, resolveRate } from "../lib/pricing";
 import { isProvinceVisible } from "../lib/islandGroups";
-import DatePicker from "../components/DatePicker";
-import TimePicker from "../components/TimePicker";
+import DateTimePicker from "../components/DateTimePicker";
 import SearchableSelect from "../components/SearchableSelect";
 import ArrivalDialog from "../components/ArrivalDialog";
 import EditBookingTimesDialog from "../components/EditBookingTimesDialog";
+import EditAgreementDateDialog from "../components/EditAgreementDateDialog";
+import CustomerContactsPanel from "../components/CustomerContactsPanel";
+import DraftContactsEditor, { type DraftContact } from "../components/DraftContactsEditor";
+import HybridLocationSearch from "../components/HybridLocationSearch";
+import { createCustomerContact } from "../lib/repo/customerContacts";
+import BookingPaymentEntriesDialog from "../components/BookingPaymentEntriesDialog";
+import PaymentBreakdownGrid, { type ExtraPaymentRow } from "../components/PaymentBreakdownGrid";
+import { createBookingPaymentEntry } from "../lib/repo/bookingPaymentEntries";
 import CancelBookingDialog from "../components/CancelBookingDialog";
 import ConfirmDialog from "../components/ConfirmDialog";
 import type {
   ActionLogEntry,
   AppSettings,
   Booking,
+  BookingPaymentEntryType,
   BookingStatus,
   BusinessProfile,
   Customer,
@@ -139,6 +147,13 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   // History) — separate from the Mark departed/returned actions above, which
   // only ever resolve a still-unset timestamp for the first time.
   const [editTimesFor, setEditTimesFor] = useState<Booking | null>(null);
+  // Same idea, for a booking's agreement_executed_at (see
+  // updateAgreementExecutedAt) — independent of Edit times, and available
+  // on any booking rather than gated on actual_return_at being set.
+  const [editAgreementFor, setEditAgreementFor] = useState<Booking | null>(null);
+  // Feature 5 (ROT051) — row action opening BookingPaymentEntriesDialog for
+  // an already-saved booking's fee/advance-payment/note breakdown.
+  const [editPaymentEntriesFor, setEditPaymentEntriesFor] = useState<Booking | null>(null);
   const [bookingLogs, setBookingLogs] = useState<ActionLogEntry[]>([]);
 
   // Live clock driving the overdue-return / departure-due badges below —
@@ -223,6 +238,38 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   // Optional extra stops beyond the primary destination above — empty for
   // the overwhelmingly common single-destination case. See BookingLeg.
   const [legs, setLegs] = useState<DraftLeg[]>([]);
+  // When the rental agreement is actually being executed/signed — left
+  // blank ("no input"), defaults to the same date+time as Out (createBooking's
+  // own fallback), never to today's real-world date, since that would make a
+  // booking recorded well ahead of a future Out date look like an advance
+  // agreement by default when nothing about it actually was. Editable on
+  // the Summary step (DateTimePicker — date, then time) for a booking
+  // genuinely signed early/late; guarded to never be after Out's *date*
+  // (time-of-day doesn't factor into the guard). See Booking.agreement_executed_at.
+  const [agreementExecutedDate, setAgreementExecutedDate] = useState("");
+  const [agreementExecutedTime, setAgreementExecutedTime] = useState("");
+  // Collapsed by default — keeps the Contact no. box's usual footprint on
+  // Profile intact until staff actually wants to add more than the one
+  // phone number. An existing customer's extra contacts are managed live
+  // (CustomerContactsPanel, same as Customers' own Edit info); a new
+  // walk-in customer doesn't have a customer_id yet, so its entries are
+  // staged here and only created once saveBooking() has a real id (see
+  // draftContacts below).
+  const [showMoreContacts, setShowMoreContacts] = useState(false);
+  const [draftContacts, setDraftContacts] = useState<DraftContact[]>([]);
+  // Feature 5 (ROT051) — supplementary fee/advance-payment/note breakdown
+  // for this booking, wholly separate from Payment amount/Expected/
+  // Settlements (see PaymentBreakdownGrid). The booking doesn't exist yet
+  // during this wizard, so these are staged and only created
+  // (createBookingPaymentEntry) once saveBooking() has a real booking id.
+  // Fee/Others are the grid's two always-shown fixed rows; extraPaymentRows
+  // are additional rows added via "+" (each with its own type, e.g. Advance
+  // payment).
+  const [feeAmount, setFeeAmount] = useState("");
+  const [feeNote, setFeeNote] = useState("");
+  const [othersAmount, setOthersAmount] = useState("");
+  const [othersNote, setOthersNote] = useState("");
+  const [extraPaymentRows, setExtraPaymentRows] = useState<ExtraPaymentRow[]>([]);
 
   async function refresh() {
     setLoading(true);
@@ -298,6 +345,10 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     setProfileAddressProvinceId(selectedCustomer?.address_province_id ?? "");
     setProfileAddressMunicipalityId(selectedCustomer?.address_municipality_id ?? "");
     setProfileAddressLine(selectedCustomer?.address_line ?? "");
+    // Draft contacts only ever apply to the walk-in customer being created
+    // right now — switching to a different (or no) customer would otherwise
+    // carry stale entries meant for someone else into whoever's picked next.
+    setDraftContacts([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerId]);
 
@@ -537,6 +588,15 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     setPaymentAmount("");
     setNotYetPaid(false);
     setLegs([]);
+    setAgreementExecutedDate("");
+    setAgreementExecutedTime("");
+    setShowMoreContacts(false);
+    setDraftContacts([]);
+    setFeeAmount("");
+    setFeeNote("");
+    setOthersAmount("");
+    setOthersNote("");
+    setExtraPaymentRows([]);
     setStep(0);
     setMaxStepReached(0);
     setShowForm(false);
@@ -563,7 +623,15 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       paymentAmount.trim() ||
       notYetPaid ||
       legs.length > 0 ||
-      purpose !== DEFAULT_PURPOSE,
+      purpose !== DEFAULT_PURPOSE ||
+      Boolean(agreementExecutedDate) ||
+      Boolean(agreementExecutedTime) ||
+      draftContacts.length > 0 ||
+      feeAmount.trim() ||
+      feeNote.trim() ||
+      othersAmount.trim() ||
+      othersNote.trim() ||
+      extraPaymentRows.length > 0,
   );
 
   // The only way out of the popup — asks first if there's anything to lose,
@@ -590,6 +658,11 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   // an empty Paid/AR field used to slip through silently (ROD022).
   const paymentAmountValid = paymentAmount.trim() !== "" && Number.isFinite(Number(paymentAmount)) && Number(paymentAmount) >= 0;
 
+  // Agreement executed can never be after the rental's Out date — blank
+  // ("no input") is always valid, since it defaults to Out's own day.
+  // String comparison works directly since both are "YYYY-MM-DD".
+  const agreementDateValid = !agreementExecutedDate || !startDate || agreementExecutedDate <= startDate;
+
   // Per-step gate for the wizard's Next button — same underlying checks
   // canSubmit already does, just split per step so each one only unlocks
   // once its own fields are actually valid.
@@ -609,6 +682,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     !dateOrderInvalid &&
     legsValid &&
     paymentAmountValid &&
+    agreementDateValid &&
     (isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId));
 
   // Does the actual save, once we know whether arrival needs to be resolved:
@@ -631,6 +705,14 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
         address_line: profileAddressLine.trim() || undefined,
       });
       finalCustomerId = created.id;
+      // Any contacts staged on the Profile step (draftContacts) can only be
+      // created now that there's a real customer_id to attach them to.
+      for (const contact of draftContacts) {
+        await createCustomerContact(
+          { customer_id: created.id, type: contact.type, label: contact.label || undefined, value: contact.value },
+          created.full_name,
+        );
+      }
     } else if (selectedCustomer) {
       // Bidirectional — an existing customer's phone/address can be filled
       // in or corrected right here, and it writes back to their actual
@@ -665,7 +747,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       resolved_rate: legRates[i]?.rate,
     }));
 
-    await createBooking({
+    const newBooking = await createBooking({
       vehicle_id: vehicleId,
       customer_id: finalCustomerId,
       destination_province_id: destinationProvinceId || undefined,
@@ -682,7 +764,36 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       resolved_rate: resolvedRate?.rate ?? undefined,
       payment_status: notYetPaid ? "receivable" : undefined,
       legs: legsPayload.length > 0 ? legsPayload : undefined,
+      agreement_executed_at: agreementExecutedDate
+        ? new Date(`${agreementExecutedDate}T${agreementExecutedTime || "00:00"}:00`).toISOString()
+        : undefined,
     });
+
+    // Feature 5 (ROT051) — the grid's Fee/Others fixed rows and any "+"
+    // rows can only be created now that there's a real booking id to attach
+    // them to. Purely informational, never touches payment_amount/
+    // expected_payment above. Fixed rows are only saved if actually filled
+    // in — an untouched Fee/Others row on the grid never creates a blank entry.
+    const stagedEntries: { type: BookingPaymentEntryType; amount: string; note: string }[] = [];
+    if (feeAmount.trim() || feeNote.trim()) {
+      stagedEntries.push({ type: "fee", amount: feeAmount, note: feeNote });
+    }
+    if (othersAmount.trim() || othersNote.trim()) {
+      stagedEntries.push({ type: "other", amount: othersAmount, note: othersNote });
+    }
+    for (const row of extraPaymentRows) {
+      if (row.amount.trim() || row.note.trim()) {
+        stagedEntries.push(row);
+      }
+    }
+    for (const entry of stagedEntries) {
+      await createBookingPaymentEntry({
+        booking_id: newBooking.id,
+        type: entry.type,
+        amount: entry.amount.trim() || undefined,
+        note: entry.note.trim() || undefined,
+      });
+    }
 
     const fuelLevelNum = Number(fuelLevel);
     if (fuelLevel.trim() && Number.isFinite(fuelLevelNum) && fuelLevelNum >= 0) {
@@ -924,10 +1035,44 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                       value={newCustomerPhone}
                       onChange={(e) => setNewCustomerPhone(e.target.value)}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowMoreContacts((s) => !s)}
+                      className="mt-2 text-sm font-medium"
+                      style={{ color: "var(--text-accent)" }}
+                    >
+                      {showMoreContacts ? "Hide additional contact information" : "See more contact information"}
+                    </button>
+                    {showMoreContacts && (
+                      <div className="mt-2">
+                        {/* An existing customer already has a customer_id —
+                            manage their extra contacts live, right here,
+                            same component and same immediate save Customers'
+                            own Edit info uses. A new walk-in has no id yet,
+                            so its entries are only staged (DraftContactsEditor)
+                            until saveBooking() actually creates the customer. */}
+                        {selectedCustomer ? (
+                          <CustomerContactsPanel customer={selectedCustomer} hideHeader />
+                        ) : (
+                          <DraftContactsEditor contacts={draftContacts} setContacts={setDraftContacts} />
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="p-2.5">
                   <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Address (optional)</div>
+                  <div className="mb-2">
+                    <HybridLocationSearch
+                      provinces={provinces}
+                      municipalities={municipalities}
+                      settings={settings}
+                      onSelect={(provinceId, cityId) => {
+                        setProfileAddressProvinceId(provinceId);
+                        setProfileAddressMunicipalityId(cityId ?? "");
+                      }}
+                    />
+                  </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <div className="flex-1">
                       <SearchableSelect
@@ -1063,6 +1208,15 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                   style={{ borderBottom: "0.5px solid var(--border-strong)" }}
                 >
                   <div className="space-y-1.5 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
+                    <HybridLocationSearch
+                      provinces={provinces}
+                      municipalities={municipalities}
+                      settings={settings}
+                      onSelect={(provinceId, cityId) => {
+                        setDestinationProvinceId(provinceId);
+                        setDestinationCityId(cityId ?? "");
+                      }}
+                    />
                     <SearchableSelect
                       value={destinationProvinceId}
                       onChange={handleDestinationProvinceChange}
@@ -1077,12 +1231,22 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                     />
                   </div>
                   <div className="space-y-1 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
-                    <DatePicker value={startDate} onChange={setStartDate} settings={settings} />
-                    <TimePicker value={startTime} onChange={setStartTime} settings={settings} />
+                    <DateTimePicker
+                      dateValue={startDate}
+                      timeValue={startTime}
+                      onDateChange={setStartDate}
+                      onTimeChange={setStartTime}
+                      settings={settings}
+                    />
                   </div>
                   <div className="space-y-1 p-2">
-                    <DatePicker value={endDate} onChange={setEndDate} settings={settings} />
-                    <TimePicker value={endTime} onChange={setEndTime} settings={settings} />
+                    <DateTimePicker
+                      dateValue={endDate}
+                      timeValue={endTime}
+                      onDateChange={setEndDate}
+                      onTimeChange={setEndTime}
+                      settings={settings}
+                    />
                     {dateOrderInvalid ? (
                       <p className="text-xs" style={{ color: "var(--text-danger)" }}>Must be after Out.</p>
                     ) : durationText ? (
@@ -1123,6 +1287,14 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                             Remove
                           </button>
                         </div>
+                        <HybridLocationSearch
+                          provinces={provinces}
+                          municipalities={municipalities}
+                          settings={settings}
+                          onSelect={(provinceId, cityId) =>
+                            updateLeg(i, { destinationProvinceId: provinceId, destinationCityId: cityId ?? "" })
+                          }
+                        />
                         <SearchableSelect
                           value={leg.destinationProvinceId}
                           onChange={(v) => updateLeg(i, { destinationProvinceId: v, destinationCityId: "" })}
@@ -1147,8 +1319,13 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                         {dt.startDT ? formatDateTime(dt.startDT.toISOString(), settings) : "—"}
                       </div>
                       <div className="space-y-1 p-2">
-                        <DatePicker value={leg.endDate} onChange={(v) => updateLeg(i, { endDate: v })} settings={settings} />
-                        <TimePicker value={leg.endTime} onChange={(v) => updateLeg(i, { endTime: v })} settings={settings} />
+                        <DateTimePicker
+                          dateValue={leg.endDate}
+                          timeValue={leg.endTime}
+                          onDateChange={(v) => updateLeg(i, { endDate: v })}
+                          onTimeChange={(v) => updateLeg(i, { endTime: v })}
+                          settings={settings}
+                        />
                         {legInvalid && (
                           <p className="text-xs" style={{ color: "var(--text-danger)" }}>Must be after this stop's start.</p>
                         )}
@@ -1185,30 +1362,23 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
               <>
                 <div className="grid grid-cols-1 sm:grid-cols-2" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
                   <div className="p-2.5" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
-                    <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Paid / AR</div>
-                    <input
-                      type="number"
-                      min={0}
-                      className="w-full rounded-md px-3 py-2 text-base"
-                      style={inputStyle}
-                      placeholder={notYetPaid ? "Amount agreed (not yet collected) *" : "Amount collected *"}
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
+                    <PaymentBreakdownGrid
+                      paymentAmount={paymentAmount}
+                      setPaymentAmount={setPaymentAmount}
+                      paymentAmountValid={paymentAmountValid}
+                      notYetPaid={notYetPaid}
+                      setNotYetPaid={setNotYetPaid}
+                      feeAmount={feeAmount}
+                      setFeeAmount={setFeeAmount}
+                      feeNote={feeNote}
+                      setFeeNote={setFeeNote}
+                      othersAmount={othersAmount}
+                      setOthersAmount={setOthersAmount}
+                      othersNote={othersNote}
+                      setOthersNote={setOthersNote}
+                      extraRows={extraPaymentRows}
+                      setExtraRows={setExtraPaymentRows}
                     />
-                    {!paymentAmountValid && (
-                      <p className="mt-1 text-xs" style={{ color: "var(--text-danger)" }}>
-                        {notYetPaid ? "Enter the amount agreed with the customer." : "Enter the amount collected."}
-                      </p>
-                    )}
-                    <label className="mt-1.5 flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={notYetPaid}
-                        onChange={(e) => setNotYetPaid(e.target.checked)}
-                      />
-                      Customer hasn't paid yet (Receivable / AR)
-                    </label>
                   </div>
                   <div className="p-2.5">
                     <div className="mb-1 text-xs font-semibold uppercase italic" style={labelStyle}>Expected</div>
@@ -1320,9 +1490,30 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                   )}
                 </div>
 
-                <div className="p-2.5">
+                <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
                   <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Purpose</div>
                   <p className="text-base" style={{ color: "var(--text-primary)" }}>{purpose}</p>
+                </div>
+
+                <div className="p-2.5">
+                  <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Agreement executed on</div>
+                  <p className="mb-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
+                    When the paperwork was actually signed — leave blank to default to the same date and time as Out. Can't be after Out's date; only change this if the booking is being recorded early or entered late.
+                  </p>
+                  <div className="max-w-[220px]">
+                    <DateTimePicker
+                      dateValue={agreementExecutedDate}
+                      timeValue={agreementExecutedTime}
+                      onDateChange={setAgreementExecutedDate}
+                      onTimeChange={setAgreementExecutedTime}
+                      settings={settings}
+                    />
+                  </div>
+                  {!agreementDateValid && (
+                    <p className="mt-1.5 text-sm" style={{ color: "var(--text-danger)" }}>
+                      Can't be after the scheduled Out date ({formatDate(`${startDate}T00:00:00`, settings)}).
+                    </p>
+                  )}
                 </div>
               </>
             )}
@@ -1488,6 +1679,22 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                             Edit times
                           </button>
                         )}
+                        {b.status !== "cancelled" && (
+                          <button
+                            onClick={() => setEditAgreementFor(b)}
+                            className="text-sm font-medium"
+                            style={{ color: "var(--text-secondary)" }}
+                          >
+                            Edit agreement date
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setEditPaymentEntriesFor(b)}
+                          className="text-sm font-medium"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          Payment breakdown
+                        </button>
                     </div>
                   </td>
                 </tr>
@@ -1553,6 +1760,26 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
             setEditTimesFor(null);
             await refresh();
           }}
+        />
+      )}
+
+      {editAgreementFor && (
+        <EditAgreementDateDialog
+          booking={editAgreementFor}
+          settings={settings}
+          onCancel={() => setEditAgreementFor(null)}
+          onSave={async (agreementExecutedAt: string) => {
+            await updateAgreementExecutedAt(editAgreementFor.id, agreementExecutedAt);
+            setEditAgreementFor(null);
+            await refresh();
+          }}
+        />
+      )}
+
+      {editPaymentEntriesFor && (
+        <BookingPaymentEntriesDialog
+          booking={editPaymentEntriesFor}
+          onClose={() => setEditPaymentEntriesFor(null)}
         />
       )}
 

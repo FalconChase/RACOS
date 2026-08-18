@@ -808,6 +808,28 @@ export default function SettingsScreen({ onSignOut }: { onSignOut: () => void })
             </select>
           </div>
 
+          <div>
+            <label className="mb-1.5 block text-sm" style={{ color: "var(--text-secondary)" }}>
+              Time picker minute interval
+            </label>
+            <select
+              className="w-full rounded-md px-3 py-2.5 text-base"
+              style={inputStyle}
+              value={settings.timeStepMinutes}
+              onChange={(e) => setSettings({ timeStepMinutes: Number(e.target.value) })}
+            >
+              <option value={1}>1 minute</option>
+              <option value={5}>5 minutes</option>
+              <option value={10}>10 minutes</option>
+              <option value={15}>15 minutes</option>
+              <option value={20}>20 minutes</option>
+              <option value={30}>30 minutes</option>
+            </select>
+            <p className="mt-1.5 text-sm" style={{ color: "var(--text-muted)" }}>
+              How far apart the marks are on the minute dial when picking a time. Doesn't limit what a time can be set to elsewhere.
+            </p>
+          </div>
+
           <p className="text-sm" style={{ color: "var(--text-muted)" }}>
             Applies to dates and times shown throughout RACOS — rentals, the home dashboard, and check-out. This is a per-device preference, not synced.
           </p>

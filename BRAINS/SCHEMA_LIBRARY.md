@@ -2,7 +2,9 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-11 (SES018), cross-checked directly against all local migration files through 0049 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below; `destination_geocodes`/`overtime_waived_at` are local-only, ROD026, no Cloud counterpart planned).
+Last compiled: 2026-08-18 (SES020), cross-checked directly against all local migration files through 0055 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below; `destination_geocodes`/`overtime_waived_at`/`time_step_minutes` are local-only, no Cloud counterpart planned).
+
+**`DateTimePicker.tsx`** (SES020, ROT050) — combined date+time popup replacing every DatePicker+TimePicker pair app-wide (New rental's Out/Due back + each leg's Due back, ArrivalDialog's custom time, EditBookingTimesDialog's Actual return, and — as of the same-session follow-up — the Agreement executed field on both New rental's Summary step and `EditAgreementDateDialog`, upgraded from date-only to date+time). Single continuous auto-advancing flow: calendar step → hour dial → minute dial → closes, no back-navigation. Circular clock-face dial for both hour (12-position ring + AM/PM toggle in 12h mode; two concentric rings 0-11/12-23 in 24h mode) and minute (marks spaced per `settings.timeStepMinutes`, capped at 12 visible marks — a 1-minute setting still shows 5-minute marks on the dial itself). Remittances period filter is the one remaining plain-`DatePicker` field (genuinely date-only, no time meaning); the native `datetime-local` inputs in the log-entry screens (Analytics/FuelLevel/GpsLocations/Map/MapTrailRecorder/Mileage/OdometerLog tabs) are a different pattern, left alone. `TimePicker.tsx` and the standalone `DatePicker.tsx` usage in BookingsScreen are now unused there (left in place, not deleted) — `DatePicker.tsx` itself is still used elsewhere (e.g. Remittances).
 
 ---
 
@@ -60,6 +62,7 @@ Last compiled: 2026-08-11 (SES018), cross-checked directly against all local mig
 | resolved_rate | text \| null | rate locked in at creation time (see Formulas) |
 | additional_payment | text \| null | overtime collected, set only via Mark Returned when late (or via Outstanding/Settlements' settle actions, see Formulas — additive/capped, ROD014) |
 | overtime_waived_at | text (ISO) \| null | SES018, migration 0048 — set only by the "Final settlement" write-off action (`waiveOvertimeBalance()`); marks overtime fully settled regardless of whether `additional_payment` ever reached the expected amount. Non-null = `isOvertimeUnsettled()` returns false (ROD027) |
+| agreement_executed_at | text (ISO) \| null | SES020, migration 0050 — when the rental agreement was actually executed/signed, distinct from `created_at`/`start_date`. Left blank on the New rental wizard's Summary step, defaults to the same calendar day+time as `start_date` (not real-world "today") — `createBooking`'s own fallback, so a booking merely recorded ahead of a future Out date doesn't look like an advance agreement by default. Guarded (both in `createBooking` and `updateAgreementExecutedAt`) to never be after `start_date`'s calendar *day* (time-of-day never factors into the guard); editable as a full date+time via `DateTimePicker` on both the Summary step and `EditAgreementDateDialog` (staff correction, logged, same guard, `updateAgreementExecutedAt()`). Synced to Cloud (widened same migration) so the Owners' Portal can flag a pending booking as "Advance" |
 | created_at, updated_at | text (ISO) | |
 
 **booking_legs** (Local, SES017 migration 0042) — chained additional stops after the primary destination, for a multi-destination booking. Only ever created alongside the booking itself (`createBooking`) — no add/edit/remove path for an already-saved booking yet.
@@ -73,10 +76,22 @@ Last compiled: 2026-08-11 (SES018), cross-checked directly against all local mig
 | resolved_rate | text \| null | mirrors `bookings.resolved_rate` — this leg's own destination's rate, locked in at creation time |
 | note | text \| null | per-leg free note |
 
+**booking_payment_entries** (Local + Cloud, SES020, migration 0054, `label` dropped by migration 0055) — supplementary, purely informational multi-row breakdown of fees/advance payments/notes for a booking. Never read by `payment_amount`/`expected_payment`/`additional_payment` or any Settlements/Remittances/Outstanding computation — staff-only reference. Freely add/edit/remove via `lib/repo/bookingPaymentEntries.ts`; every change logged to `action_logs` (`entity_type='booking'`). Synced (staff-only, no owner RLS policy, same precedent as `customer_contacts`).
+| Column | Type | Notes |
+|---|---|---|
+| id | text/uuid PK | |
+| business_id, booking_id | FK/FK | booking_id cascades on delete |
+| type | text | `fee` \| `advance_payment` \| `other` |
+| amount | text \| null | exact-decimal text, same convention as every other money field |
+| note | text \| null | free-form note; also carries any "please specify" detail for type='other' — the original separate `label` column (migration 0054) was dropped (migration 0055) as redundant once this covered the same need |
+| created_at, updated_at | text/timestamptz | |
+
+Surfaced on the New rental wizard's Payment step via `PaymentBreakdownGrid.tsx` (Excel-style table, replacing the step's original plain Paid/AR inputs) — see New rental writeup below. Also reachable from an existing booking via a "Payment breakdown" row action → `BookingPaymentEntriesDialog.tsx` (modal wrapper around `BookingPaymentEntriesPanel.tsx`, still list-style, not yet rebuilt into the grid — pending Falcon's call after seeing the wizard version).
+
 **vehicles**, **customers** — referenced for plate number / customer name display only (see their own tabs below for full columns).
 **app_settings** — `duration_display`, `show_expected_payment`, `fuelUnit` (bars/liters) affect how this screen describes/reveals duration, expected payment, and the inline fuel entry field.
 
-**New rental** (SES017 full rebuild) — opens as a popup dialog (not an inline form), exitable only via Cancel (confirms first if the form is dirty). A 5-step wizard, strictly Next/Back on first pass through: **Profile** (customer picker or new-customer inline; Contact No./Address always editable, bidirectionally writes back to the `customers` row — see Customers section above) → **Vehicle** (vehicle picker + optional inline Fuel level/Odometer, each capped by the selected vehicle's `fuel_max_level` and written to `fuel_level_entries`/`odometer_readings` at save time, `reading_at` = save time not the rental's own start) → **Destination** (province-then-city, quick-pick chips, primary + chained `booking_legs`) → **Payment** (`payment_status`, amount — **required**, never blank, SES018/ROD030 — Purpose) → **Summary** (read-only recap, the only step with the real Save button). Once a step has been reached in the current session, its tab becomes clickable/accent-colored for jumping straight back (or forward, within reached range) to review — unreached steps stay inert. The "This booking already happened" ArrivalDialog fires only from an actual Save click, never from Next navigation (RC015/RC016, FX015/FX016).
+**New rental** (SES017 full rebuild) — opens as a popup dialog (not an inline form), exitable only via Cancel (confirms first if the form is dirty). A 5-step wizard, strictly Next/Back on first pass through: **Profile** (customer picker or new-customer inline; Contact No./Address always editable, bidirectionally writes back to the `customers` row — see Customers section above) → **Vehicle** (vehicle picker + optional inline Fuel level/Odometer, each capped by the selected vehicle's `fuel_max_level` and written to `fuel_level_entries`/`odometer_readings` at save time, `reading_at` = save time not the rental's own start) → **Destination** (province-then-city, quick-pick chips, primary + chained `booking_legs`; primary destination, each leg, and Profile's Address all also have a `HybridLocationSearch` box above their two dropdowns, SES020/ROT049 — one search resolving either a city or province, typed in any order, sets both dropdowns at once) → **Payment** (`PaymentBreakdownGrid.tsx`, Excel-style table, SES020/ROT051 — Payment row is a redisplay of the existing `payment_status`/amount fields, still **required**/never blank, SES018/ROD030; fixed Fee/Others rows + "+"-added extra rows feed the purely-informational `booking_payment_entries`; on-screen-only Total; Purpose field alongside) → **Summary** (read-only recap, plus the one editable field on this step — Agreement executed date, blank defaults to same day as Out, capped at Out, see `agreement_executed_at` — and the real Save button). Once a step has been reached in the current session, its tab becomes clickable/accent-colored for jumping straight back (or forward, within reached range) to review — unreached steps stay inert. The "This booking already happened" ArrivalDialog fires only from an actual Save click, never from Next navigation (RC015/RC016, FX015/FX016).
 
 ---
 
@@ -173,10 +188,22 @@ Every edit (and creation) is written to **action_logs**:
 | business_id | FK | |
 | full_name | text | required |
 | email, phone, license_number | text \| null | |
-| address_province_id, address_municipality_id, address_line | text \| null FK/FK/text | structured address (SES017, migration 0038) — `updateCustomerAddress()` |
+| address_province_id, address_municipality_id, address_line | text \| null FK/FK/text | structured address (SES017, migration 0038) — `updateCustomerAddress()`; both the add-customer form and `CustomerAddressEditRow` also have a `HybridLocationSearch` box above the two dropdowns (SES020/ROT049) |
 | created_at, updated_at | text/timestamptz | |
 
 Contact No. and Address are also editable directly from the New rental wizard's Profile step (SES017) — auto-populated from the selected existing customer but always overwritable, or filled inline for a new one; an edit there writes back to this table via `updateCustomerPhone()`/`updateCustomerAddress()` at booking-save time (bidirectional, no separate trip to this tab required).
+
+**customer_contacts** (Local + Cloud, SES020, migration 0051) — optional extra contact entries beyond the single phone/email columns above, which stay untouched. Freely add/edit/remove (not append-only) via `lib/repo/customerContacts.ts`; every change logged to `action_logs`. Cascades on customer delete both sides. Synced (staff-only, no owner RLS policy — same precedent as `customers` itself never being exposed to the Owners' Portal).
+| Column | Type | Notes |
+|---|---|---|
+| id | text/uuid PK | |
+| business_id, customer_id | FK/FK | customer_id cascades on delete |
+| type | text | `phone` \| `email` \| `other` |
+| label | text \| null | required (as the free-text "please specify") when type='other'; optional descriptive tag otherwise (e.g. "Work", "Emergency") |
+| value | text | the actual contact value |
+| created_at, updated_at | text/timestamptz | |
+
+Managed from Customers via the single "Edit info" row action (`CustomerContactsPanel.tsx`, alongside the address editor, one consolidated expanded row — no separate "Contacts" button anymore). Also live-editable right from the New rental wizard's Profile step, behind a collapsed-by-default "See more contact information" toggle under Contact no. — an existing selected customer uses the same live panel (`hideHeader` mode, writes immediately, bidirectional with Customers); a new walk-in customer has no `customer_id` yet, so its entries are staged in `DraftContactsEditor.tsx` and only created once `saveBooking()` has a real id.
 
 **Outstanding sub-tab** (SES018, `CustomerOutstandingTab.tsx`) — no new table; a flat, oldest-first list of every booking with an unsettled overtime balance (`isOvertimeUnsettled()`) or a `payment_status = 'receivable'` balance, drawn from the same `bookings`/`vehicles`/`business_profile`/rate-matrix tables as Settlements. "Settle overtime" and "Mark as paid" call the exact same shared logic as Settlements — `lib/overtimeSettlement.ts` (`computeOvertimeSettlement`) and `components/OvertimeSettleForm.tsx`/`WaiveOvertimeButton` — so the two screens can never disagree on what's still owed. Both actions require a `ConfirmDialog` confirmation before writing (SES018).
 
@@ -370,6 +397,7 @@ No new tables — a read-only, per-vehicle computed view (vehicle picker + date 
 | show_expected_payment | showExpectedPayment | 0/1 |
 | dash_label_unit/lessee/etd/eta | dashLabelUnit/Lessee/Etd/Eta | 0/1 each, Home-only cosmetic labels |
 | show_remittance_summary | showRemittanceSummary | 0/1 |
+| time_step_minutes | timeStepMinutes | SES020, migration 0052 (+0053 default flip) — minute-dial mark spacing for `DateTimePicker` (Settings > General); 1/5/10/15/20/30, default 5 |
 | auto_mark_departed | autoMarkDeparted | 0/1, default 1 |
 | show_luzon/visayas/mindanao | showLuzon/Visayas/Mindanao | 0/1 each, default 1, at least one must stay on (UI-enforced) |
 

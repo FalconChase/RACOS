@@ -1,6 +1,5 @@
 import { useState } from "react";
-import DatePicker from "./DatePicker";
-import TimePicker from "./TimePicker";
+import DateTimePicker from "./DateTimePicker";
 import { formatDateTime } from "../lib/dateFormat";
 import type { AppSettings, Booking } from "../lib/types";
 import type { BookingTimeUpdate } from "../lib/repo/bookings";
@@ -118,14 +117,13 @@ export default function EditBookingTimesDialog({ booking, settings, onCancel, on
             <div>
               <label className="mb-1.5 block text-sm" style={fieldLabelStyle}>Actual return</label>
               {booking.actual_return_at ? (
-                <div className="flex gap-2">
-                  <div className="w-1/2">
-                    <DatePicker value={returnDate} onChange={setReturnDate} settings={settings} />
-                  </div>
-                  <div className="w-1/2">
-                    <TimePicker value={returnTime} onChange={setReturnTime} settings={settings} />
-                  </div>
-                </div>
+                <DateTimePicker
+                  dateValue={returnDate}
+                  timeValue={returnTime}
+                  onDateChange={setReturnDate}
+                  onTimeChange={setReturnTime}
+                  settings={settings}
+                />
               ) : (
                 <p className="rounded-md px-3 py-2.5 text-sm" style={readOnlyBoxStyle}>
                   Not yet returned

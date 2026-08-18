@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import DatePicker from "./DatePicker";
-import TimePicker from "./TimePicker";
+import DateTimePicker from "./DateTimePicker";
 import { formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatHoursAsDaysHHMM, formatHoursAsHHMM, roundToNearestHalfHour } from "../lib/duration";
 import { computeExpectedPayment } from "../lib/pricing";
@@ -233,13 +232,14 @@ export default function ArrivalDialog({ kind, mode, scheduledIso, departedAtIso,
           </label>
 
           {choice === "custom" && (
-            <div className="ml-6 flex gap-2">
-              <div className="w-1/2">
-                <DatePicker value={customDate} onChange={setCustomDate} settings={settings} />
-              </div>
-              <div className="w-1/2">
-                <TimePicker value={customTime} onChange={setCustomTime} settings={settings} />
-              </div>
+            <div className="ml-6">
+              <DateTimePicker
+                dateValue={customDate}
+                timeValue={customTime}
+                onDateChange={setCustomDate}
+                onTimeChange={setCustomTime}
+                settings={settings}
+              />
             </div>
           )}
 

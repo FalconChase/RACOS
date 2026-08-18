@@ -51,12 +51,29 @@ export default function DatePicker({ value, onChange, settings, highlightedDates
   const [viewYear, setViewYear] = useState(parsed?.year ?? today.getFullYear());
   const [viewMonth, setViewMonth] = useState(parsed?.month ?? today.getMonth());
 
+  // Roughly how tall the popup renders (header + weekday row + up to 6 week
+  // rows + padding) — used only to decide whether it fits below the anchor,
+  // not for exact layout.
+  const ESTIMATED_HEIGHT = 340;
+  const VIEWPORT_MARGIN = 8;
+
   function openPicker() {
     const p = parseValue(value);
     setViewYear(p?.year ?? today.getFullYear());
     setViewMonth(p?.month ?? today.getMonth());
     const rect = anchorRef.current?.getBoundingClientRect();
-    if (rect) setPos({ top: rect.bottom, left: rect.left });
+    if (rect) {
+      // Flip upward when there isn't room below the anchor (e.g. a field
+      // near the bottom of a tall popup dialog, like New rental's Summary
+      // step) — otherwise the calendar's lower rows render past the bottom
+      // of the window with nothing to scroll them into view.
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openUpward = spaceBelow < ESTIMATED_HEIGHT && rect.top > ESTIMATED_HEIGHT;
+      const top = openUpward
+        ? Math.max(VIEWPORT_MARGIN, rect.top - ESTIMATED_HEIGHT)
+        : rect.bottom;
+      setPos({ top, left: rect.left });
+    }
     setOpen(true);
   }
 
@@ -116,8 +133,14 @@ export default function DatePicker({ value, onChange, settings, highlightedDates
               onWheel={() => setOpen(false)}
             />
             <div
-              className="fixed z-[60] mt-1.5 w-72 rounded-md p-3"
-              style={{ top: pos.top, left: pos.left, background: "var(--surface-1)", border: "0.5px solid var(--border-strong)" }}
+              className="fixed z-[60] mt-1.5 w-72 overflow-y-auto rounded-md p-3"
+              style={{
+                top: pos.top,
+                left: pos.left,
+                maxHeight: `calc(100vh - ${2 * VIEWPORT_MARGIN}px)`,
+                background: "var(--surface-1)",
+                border: "0.5px solid var(--border-strong)",
+              }}
             >
               <div className="mb-2 flex items-center justify-between text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                 <button type="button" onClick={() => shiftMonth(-1)} className="rounded px-2 py-1" style={{ color: "var(--text-secondary)" }}>‹</button>

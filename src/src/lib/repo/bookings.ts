@@ -6,6 +6,15 @@ import { bookingRef } from "../bookingRef";
 import { formatHHMM } from "../duration";
 import type { ActionLogChange, Booking, BookingStatus } from "../types";
 
+// Calendar-day comparison (local time, matching how both the wizard's
+// DatePicker and EditAgreementDateDialog construct their ISO values —
+// `new Date(\`${date}T00:00:00\`)`) — used only for the agreement-execution
+// guard below, never for anything timing-sensitive.
+function dateOnly(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // Cancellation reasons offered on CancelBookingDialog — kept narrow and
 // preset (plus a free-text escape hatch) rather than an open text field for
 // every cancellation, so the audit trail stays scannable/consistent instead
@@ -143,6 +152,11 @@ export interface NewBookingInput {
   // known-customer case where staff records the booking before payment is
   // actually in hand. See payment_status on the Booking type.
   payment_status?: "paid" | "receivable";
+  // When the agreement was actually executed/signed — ISO datetime. Omitted
+  // means "now" (the booking form defaults its picker to today, but this
+  // stays optional here so any future caller can rely on the same default).
+  // See agreement_executed_at on the Booking type.
+  agreement_executed_at?: string;
   // Extra stops beyond destination_province_id/city_id (the primary
   // destination) — see BookingLeg. Omitted/empty for the overwhelmingly
   // common single-destination case. IMPORTANT: end_date above must already
@@ -188,6 +202,17 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
   // "departure due" flag once its scheduled start_date passes.
   const actual_departure_at = status !== "pending" ? input.start_date : null;
 
+  // Agreement can never be executed after the rental it covers is scheduled
+  // to go out — only on or before the Out date. Left unspecified, it
+  // defaults to the same day as Out (not "now"/today's real date) — a
+  // booking recorded well ahead of a future start_date otherwise looked
+  // like an "advance" agreement by default, when nothing about it actually
+  // was.
+  if (input.agreement_executed_at && dateOnly(input.agreement_executed_at) > dateOnly(input.start_date)) {
+    throw new Error("Agreement executed date can't be after the scheduled Out date.");
+  }
+  const agreement_executed_at = input.agreement_executed_at ?? input.start_date;
+
   const booking: Booking = {
     id,
     business_id,
@@ -224,6 +249,9 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     // Never set at creation — only waiveOvertimeBalance writes this, and
     // only after a booking has actually closed out with overtime.
     overtime_waived_at: null,
+    // Defaults to the same day as Out (start_date) when the caller doesn't
+    // pass one — see the guard/default computed above.
+    agreement_executed_at,
     created_at: nowIso,
     updated_at: nowIso,
   };
@@ -233,8 +261,8 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
        (id, business_id, vehicle_id, customer_id, start_date, end_date, status, destination_province_id,
         destination_city_id, destination_note, payment_amount, expected_payment, purpose, created_by,
         pending_availability_check, actual_return_at, actual_departure_at, resolved_rate,
-        remittance_split_override, payment_status, paid_at, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        remittance_split_override, payment_status, paid_at, agreement_executed_at, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       booking.id,
       booking.business_id,
@@ -257,6 +285,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.remittance_split_override,
       booking.payment_status,
       booking.paid_at,
+      booking.agreement_executed_at,
       booking.created_at,
       booking.updated_at,
     ],
@@ -636,6 +665,50 @@ export async function setRemittanceSplitOverride(
     "Remittance split (Hybrid)",
     before.remittance_split_override,
     mode,
+  );
+  if (change) {
+    await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "updated", changes: [change] });
+  }
+
+  return updated;
+}
+
+// Corrects a booking's agreement execution date after the fact — e.g. staff
+// entering the booking into the system later than it was actually signed,
+// or a typo in the picker at recording time. Deliberately its own narrow
+// function (mirrors updateBookingTimes' single-purpose shape) rather than a
+// field folded into a general "edit booking" path, so there's always a
+// clean action_logs entry showing exactly what changed and when. This is
+// the ONE thing this function touches — vehicle, customer, payment, and the
+// booking's actual timing all stay exactly as they are.
+export async function updateAgreementExecutedAt(id: string, agreementExecutedAt: string): Promise<Booking> {
+  const db = await getDb();
+  const before = await getBookingById(id);
+  if (!before) throw new Error("Booking not found.");
+
+  // Same guard as createBooking — agreement can never be executed after the
+  // rental's scheduled Out date.
+  if (dateOnly(agreementExecutedAt) > dateOnly(before.start_date)) {
+    throw new Error("Agreement executed date can't be after the scheduled Out date.");
+  }
+
+  const now = new Date().toISOString();
+  await db.execute(
+    "update bookings set agreement_executed_at = ?, updated_at = ? where id = ?",
+    [agreementExecutedAt, now, id],
+  );
+
+  const rows = await db.select<Booking[]>("select * from bookings where id = ?", [id]);
+  const updated = rows[0];
+  if (!updated) throw new Error("Booking not found.");
+
+  await queueOutbox(db, "bookings", id, "update", updated as unknown as Record<string, unknown>);
+
+  const change = diffField(
+    "agreement_executed_at",
+    "Agreement executed",
+    before.agreement_executed_at,
+    updated.agreement_executed_at,
   );
   if (change) {
     await logAction({ entityType: "booking", entityId: id, entityLabel: bookingRef(id), action: "updated", changes: [change] });

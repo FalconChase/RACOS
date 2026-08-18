@@ -304,6 +304,42 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0049_destination_geocodes.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 50,
+            description: "booking_agreement_executed_at",
+            sql: include_str!("../migrations/0050_booking_agreement_executed_at.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 51,
+            description: "customer_contacts",
+            sql: include_str!("../migrations/0051_customer_contacts.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 52,
+            description: "time_step_minutes_setting",
+            sql: include_str!("../migrations/0052_time_step_minutes_setting.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 53,
+            description: "time_step_minutes_default_5",
+            sql: include_str!("../migrations/0053_time_step_minutes_default_5.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 54,
+            description: "booking_payment_entries",
+            sql: include_str!("../migrations/0054_booking_payment_entries.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 55,
+            description: "booking_payment_entries_drop_label",
+            sql: include_str!("../migrations/0055_booking_payment_entries_drop_label.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

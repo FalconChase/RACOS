@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { createCustomer, deleteCustomer, listCustomers, updateCustomerAddress } from "../lib/repo/customers";
 import { listMunicipalities, listProvinces } from "../lib/repo/locations";
 import { useSettings } from "../lib/settingsContext";
 import { isProvinceVisible } from "../lib/islandGroups";
 import SearchableSelect from "../components/SearchableSelect";
+import CustomerContactsPanel from "../components/CustomerContactsPanel";
+import HybridLocationSearch from "../components/HybridLocationSearch";
 import type { Customer, Municipality, Province } from "../lib/types";
 
 const inputStyle: React.CSSProperties = {
@@ -25,6 +27,9 @@ export default function CustomersScreen() {
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // "Edit info" now covers both address and additional contacts together —
+  // one expanded row, not two separate row actions fighting over the same
+  // slot.
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [fullName, setFullName] = useState("");
@@ -141,6 +146,15 @@ export default function CustomersScreen() {
           <p className="text-sm font-medium" style={{ color: "var(--text-secondary)" }}>
             Address (optional — fill in now or edit later)
           </p>
+          <HybridLocationSearch
+            provinces={provinces}
+            municipalities={municipalities}
+            settings={settings}
+            onSelect={(pId, mId) => {
+              setProvinceId(pId);
+              setMunicipalityId(mId ?? "");
+            }}
+          />
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="flex-1">
               <SearchableSelect
@@ -197,56 +211,75 @@ export default function CustomersScreen() {
             </tr>
           </thead>
           <tbody>
-            {customers.map((c) =>
-              editingId === c.id ? (
-                <tr key={c.id}>
-                  <td colSpan={6} className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
-                    <CustomerAddressEditRow
-                      customer={c}
-                      provinces={provinces}
-                      municipalities={municipalities}
-                      onCancel={() => setEditingId(null)}
-                      onSaved={async () => {
-                        setEditingId(null);
-                        await refresh();
-                      }}
-                    />
-                  </td>
-                </tr>
-              ) : (
-                <tr key={c.id}>
-                  <td className="px-3 py-2.5 font-medium" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{c.full_name}</td>
-                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.email ?? "—"}</td>
-                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.phone ?? "—"}</td>
-                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.license_number ?? "—"}</td>
-                  <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
-                    {combineAddress(
-                      municipalities.find((m) => m.id === c.address_municipality_id),
-                      provinces.find((p) => p.id === c.address_province_id),
-                      c.address_line ?? "",
-                    ) || "No address on file"}
-                  </td>
-                  <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
-                    <div className="flex justify-end gap-3">
+            {customers.map((c) => (
+              <Fragment key={c.id}>
+                {editingId === c.id ? (
+                  <tr>
+                    <td colSpan={6} className="space-y-4 px-3 py-2.5" style={{ border: "0.5px solid var(--border)" }}>
+                      <div>
+                        <p className="mb-1.5 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Address</p>
+                        <CustomerAddressEditRow
+                          customer={c}
+                          provinces={provinces}
+                          municipalities={municipalities}
+                          onCancel={() => setEditingId(null)}
+                          onSaved={async () => {
+                            // Deliberately doesn't close the row — Edit info
+                            // now covers both address and contacts together,
+                            // so saving one half shouldn't kick you out
+                            // before you're done with the other.
+                            await refresh();
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1.5 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Additional contacts</p>
+                        <CustomerContactsPanel customer={c} hideHeader />
+                      </div>
                       <button
-                        onClick={() => setEditingId(c.id)}
-                        className="text-sm font-medium"
-                        style={{ color: "var(--text-accent)" }}
+                        onClick={() => setEditingId(null)}
+                        className="rounded-md px-4 py-2 text-sm font-medium"
+                        style={{ background: "var(--fill-primary)", color: "var(--on-primary)" }}
                       >
-                        Edit address
+                        Done
                       </button>
-                      <button
-                        onClick={() => handleDelete(c.id)}
-                        className="text-sm font-medium"
-                        style={{ color: "var(--text-danger)" }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ),
-            )}
+                    </td>
+                  </tr>
+                ) : (
+                  <tr>
+                    <td className="px-3 py-2.5 font-medium" style={{ border: "0.5px solid var(--border)", color: "var(--text-primary)" }}>{c.full_name}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.email ?? "—"}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.phone ?? "—"}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>{c.license_number ?? "—"}</td>
+                    <td className="px-3 py-2.5" style={{ border: "0.5px solid var(--border)", color: "var(--text-secondary)" }}>
+                      {combineAddress(
+                        municipalities.find((m) => m.id === c.address_municipality_id),
+                        provinces.find((p) => p.id === c.address_province_id),
+                        c.address_line ?? "",
+                      ) || "No address on file"}
+                    </td>
+                    <td className="px-3 py-2.5 text-right" style={{ border: "0.5px solid var(--border)" }}>
+                      <div className="flex justify-end gap-3">
+                        <button
+                          onClick={() => setEditingId(c.id)}
+                          className="text-sm font-medium"
+                          style={{ color: "var(--text-accent)" }}
+                        >
+                          Edit info
+                        </button>
+                        <button
+                          onClick={() => handleDelete(c.id)}
+                          className="text-sm font-medium"
+                          style={{ color: "var(--text-danger)" }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       )}
@@ -318,6 +351,15 @@ function CustomerAddressEditRow({
           </button>
         </div>
       )}
+      <HybridLocationSearch
+        provinces={provinces}
+        municipalities={municipalities}
+        settings={settings}
+        onSelect={(pId, mId) => {
+          setProvinceId(pId);
+          setMunicipalityId(mId ?? "");
+        }}
+      />
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="flex-1">
           <SearchableSelect

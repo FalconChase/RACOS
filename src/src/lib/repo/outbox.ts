@@ -12,7 +12,9 @@ export type OutboxTable =
   | "mileage_entries"
   | "gps_location_labels"
   | "fuel_level_entries"
-  | "booking_legs";
+  | "booking_legs"
+  | "customer_contacts"
+  | "booking_payment_entries";
 export type OutboxOp = "insert" | "update" | "delete";
 
 // Feeds the "N pending sync" badge — count of mutations not yet pushed to Supabase.

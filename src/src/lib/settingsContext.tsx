@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showRemittanceSummary: true,
   remittancePaymentColor: "#3b82f6",
   remittanceExpectedOpacity: 50,
+  timeStepMinutes: 5,
   fuelUnit: "bars",
   autoMarkDeparted: true,
   showLuzon: true,

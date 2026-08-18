@@ -150,6 +150,54 @@ export interface Customer {
   updated_at: string;
 }
 
+// Extra contact entries beyond a customer's single phone/email fields
+// (which stay as-is) — see customer_contacts, migration 0051. Freely add/
+// edit/delete via lib/repo/customerContacts.ts, every change logged to
+// action_logs the same way other customer edits are.
+export type CustomerContactType = "phone" | "email" | "other";
+
+export interface CustomerContact {
+  id: string;
+  business_id: string;
+  customer_id: string;
+  type: CustomerContactType;
+  // Required (as the "please specify" description) when type === "other";
+  // optional for phone/email (e.g. "Work", "Emergency") — purely
+  // descriptive, never drives any logic.
+  label: string | null;
+  value: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Feature 5 (ROT051) — a purely supplementary, informational multi-row
+// breakdown of fees/advance payments/notes tied to a booking. Wholly
+// separate from bookings.payment_amount/expected_payment/additional_payment
+// and every Settlements/Remittances/Outstanding computation — none of that
+// logic reads booking_payment_entries at all, by design; this table exists
+// only so staff have somewhere to jot down "cleaning fee 500", "advance
+// 1000 collected on X", etc. without it affecting any billing math. Freely
+// add/edit/delete via lib/repo/bookingPaymentEntries.ts, every change
+// logged to action_logs. Staff-only — synced to Cloud for backup but no
+// owner RLS policy, same precedent as customer_contacts.
+export type BookingPaymentEntryType = "fee" | "advance_payment" | "other";
+
+export interface BookingPaymentEntry {
+  id: string;
+  business_id: string;
+  booking_id: string;
+  type: BookingPaymentEntryType;
+  // Money as exact-decimal text (project-wide convention) — optional, a
+  // pure note entry can skip it.
+  amount: string | null;
+  // Optional free-form note — carries any "please specify" detail for
+  // type === "other" too; the original separate `label` field (migration
+  // 0054) was dropped as redundant (migration 0055) in favor of just this.
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type BookingStatus =
   | "pending"
   | "confirmed"
@@ -246,6 +294,14 @@ export interface Booking {
   // (partial or fully unpaid). See waiveOvertimeBalance and
   // lib/overtimeSettlement.ts. Local-only — never pushed to Cloud.
   overtime_waived_at: string | null;
+  // When the rental agreement was actually executed/signed — distinct from
+  // created_at (when the record was entered into the system, which can lag
+  // the real signing) and from start_date (the scheduled pickup, often in
+  // the future for an advance booking). Defaults to "now" at booking-form
+  // time, staff-editable afterward via updateAgreementExecutedAt (every
+  // correction logged to action_logs). Synced to Cloud so the Owners'
+  // Portal can tell an advance reservation apart from a same-day one.
+  agreement_executed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -307,6 +363,10 @@ export interface AppSettings {
   // text color with this layered on top, not a separate hardcoded color —
   // see RemittancesReport.tsx. 50 by default.
   remittanceExpectedOpacity: number;
+  // Minute-increment shown on DateTimePicker's minute dial, app-wide (e.g.
+  // 15 -> :00/:15/:30/:45 only). Doesn't restrict any stored time value —
+  // only how coarse/fine the dial's clickable marks are. 15 by default.
+  timeStepMinutes: number;
   // Business-wide default for how fuel level is logged (Tools > Entries) —
   // a fleet typically reads gauges the same way. Each FuelLevelEntry still
   // snapshots its own unit at save time, so changing this later never

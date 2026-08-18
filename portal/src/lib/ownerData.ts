@@ -42,6 +42,12 @@ export interface OwnerBooking {
   actual_departure_at: string | null;
   actual_return_at: string | null;
   created_at: string;
+  // When the rental agreement was actually executed/signed — lets you tell
+  // an advance reservation (executed well before start_date) apart from a
+  // same-day walk-in, so you know ahead of time if a vehicle you might want
+  // for personal use already has a booking on the books. See
+  // isAdvanceBooking below.
+  agreement_executed_at: string | null;
   vehicle: { plate_number: string; make: string | null; model: string | null } | null;
 }
 
@@ -60,7 +66,7 @@ export async function fetchOwnerBookings(token: string, limit = 200): Promise<Ow
   const { data, error } = await client
     .from("bookings")
     .select(
-      "id, vehicle_id, start_date, end_date, status, destination_label, purpose, payment_amount, expected_payment, additional_payment, actual_departure_at, actual_return_at, created_at, vehicle:vehicles(plate_number, make, model)",
+      "id, vehicle_id, start_date, end_date, status, destination_label, purpose, payment_amount, expected_payment, additional_payment, actual_departure_at, actual_return_at, agreement_executed_at, created_at, vehicle:vehicles(plate_number, make, model)",
     )
     .order("start_date", { ascending: false })
     .limit(limit);
@@ -247,6 +253,21 @@ export async function createOwnerMileageEntry(
     note: input.note ?? null,
   });
   if (error) throw new Error(error.message);
+}
+
+// True when the agreement was executed on an earlier calendar day than the
+// booking's scheduled start — i.e. a genuine advance reservation, not a
+// same-day walk-in. Compares calendar dates (not exact timestamps), so an
+// agreement signed at 11pm the night before a morning pickup still counts.
+// Falls back to false (never flagged "advance") when either date is
+// missing, rather than guessing.
+export function isAdvanceBooking(booking: OwnerBooking): boolean {
+  if (!booking.agreement_executed_at) return false;
+  const executed = new Date(booking.agreement_executed_at);
+  const start = new Date(booking.start_date);
+  const executedDay = Date.UTC(executed.getFullYear(), executed.getMonth(), executed.getDate());
+  const startDay = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  return executedDay < startDay;
 }
 
 export function money(value: string | null): number {

@@ -1,9 +1,14 @@
-import type { OwnerBooking } from "@/lib/ownerData";
+import { isAdvanceBooking, type OwnerBooking } from "@/lib/ownerData";
 import { BookingStatusBadge } from "./StatusBadge";
 
 function fmt(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-PH", { dateStyle: "medium" });
 }
 
 // Never shows renter identity (name/contact) — the sync worker/RLS never
@@ -25,21 +30,33 @@ export default function ActivityLogTab({ bookings }: { bookings: OwnerBooking[] 
             <th className="px-4 py-3">Destination</th>
             <th className="px-4 py-3">Purpose</th>
             <th className="px-4 py-3">Status</th>
+            <th className="px-4 py-3">Booked on</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-zinc-800">
-          {bookings.map((b) => (
-            <tr key={b.id} className="text-zinc-200">
-              <td className="px-4 py-3 font-medium">{b.vehicle?.plate_number ?? "—"}</td>
-              <td className="px-4 py-3 text-zinc-400">{fmt(b.actual_departure_at ?? b.start_date)}</td>
-              <td className="px-4 py-3 text-zinc-400">{fmt(b.actual_return_at ?? b.end_date)}</td>
-              <td className="px-4 py-3 text-zinc-400">{b.destination_label ?? "—"}</td>
-              <td className="px-4 py-3 text-zinc-400">{b.purpose ?? "—"}</td>
-              <td className="px-4 py-3">
-                <BookingStatusBadge status={b.status} />
-              </td>
-            </tr>
-          ))}
+          {bookings.map((b) => {
+            const advance = b.status === "pending" && isAdvanceBooking(b);
+            return (
+              <tr key={b.id} className="text-zinc-200">
+                <td className="px-4 py-3 font-medium">{b.vehicle?.plate_number ?? "—"}</td>
+                <td className="px-4 py-3 text-zinc-400">{fmt(b.actual_departure_at ?? b.start_date)}</td>
+                <td className="px-4 py-3 text-zinc-400">{fmt(b.actual_return_at ?? b.end_date)}</td>
+                <td className="px-4 py-3 text-zinc-400">{b.destination_label ?? "—"}</td>
+                <td className="px-4 py-3 text-zinc-400">{b.purpose ?? "—"}</td>
+                <td className="px-4 py-3">
+                  <BookingStatusBadge status={b.status} />
+                </td>
+                <td className="px-4 py-3 text-zinc-400">
+                  {fmtDate(b.agreement_executed_at)}
+                  {advance && (
+                    <span className="ml-2 rounded-full bg-amber-400/10 px-2 py-0.5 text-xs font-medium text-amber-400">
+                      Advance
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

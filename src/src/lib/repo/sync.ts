@@ -207,6 +207,8 @@ const CONFLICT_KEY: Record<OutboxTable, string> = {
   gps_location_labels: "entry_id",
   fuel_level_entries: "id",
   booking_legs: "id",
+  customer_contacts: "id",
+  booking_payment_entries: "id",
 };
 
 async function ensureOwnerMirrored(db: Database, ownerId: string): Promise<void> {
@@ -306,6 +308,9 @@ async function mapToCloudShape(
         additional_payment: local.additional_payment,
         actual_return_at: local.actual_return_at,
         actual_departure_at: local.actual_departure_at,
+        // ROT047 — lets the Owners' Portal tell an advance reservation apart
+        // from a same-day one (see agreement_executed_at on the Booking type).
+        agreement_executed_at: local.agreement_executed_at,
         created_by: local.created_by,
         created_at: local.created_at,
         updated_at: local.updated_at,
@@ -403,6 +408,30 @@ async function mapToCloudShape(
         end_at: local.end_at,
         resolved_rate: local.resolved_rate,
         created_at: local.created_at,
+      };
+
+    case "customer_contacts":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        customer_id: local.customer_id,
+        type: local.type,
+        label: local.label,
+        value: local.value,
+        created_at: local.created_at,
+        updated_at: local.updated_at,
+      };
+
+    case "booking_payment_entries":
+      return {
+        id: local.id,
+        business_id: local.business_id,
+        booking_id: local.booking_id,
+        type: local.type,
+        amount: local.amount,
+        note: local.note,
+        created_at: local.created_at,
+        updated_at: local.updated_at,
       };
   }
 }
