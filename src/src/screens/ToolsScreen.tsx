@@ -1,13 +1,16 @@
 import { useState } from "react";
 import CarActivity from "./CarActivity";
-import LogsScreen from "./LogsScreen";
 import EntriesScreen from "./EntriesScreen";
 
-type Subtab = "carActivity" | "logs" | "entries";
+type Subtab = "carActivity" | "entries";
 
 // Rendered as a real subtab bar (same pattern as Rentals' Ongoing/History
 // and Settlements' Records/Remittances) so further tools can land later
 // without restructuring this screen.
+//
+// Logs moved out to the top-level Logs tab (see LogsHubScreen.tsx),
+// alongside Settlements > Records, to cut sidebar/subtab clutter — same
+// component (LogsScreen.tsx), same logic, same look, just a different home.
 export default function ToolsScreen() {
   const [subtab, setSubtab] = useState<Subtab>("carActivity");
 
@@ -17,7 +20,6 @@ export default function ToolsScreen() {
         {(
           [
             { id: "carActivity", label: "Car Activity" },
-            { id: "logs", label: "Logs" },
             { id: "entries", label: "Entries" },
           ] as { id: Subtab; label: string }[]
         ).map((t) => (
@@ -37,7 +39,6 @@ export default function ToolsScreen() {
       </div>
 
       {subtab === "carActivity" && <CarActivity />}
-      {subtab === "logs" && <LogsScreen />}
       {subtab === "entries" && <EntriesScreen />}
     </div>
   );

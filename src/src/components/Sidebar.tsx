@@ -14,6 +14,7 @@ import {
   ToolIcon,
   CloudUpIcon,
   BarChartIcon,
+  ListIcon,
 } from "./icons";
 import type { Tab } from "../App";
 
@@ -25,6 +26,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: typeof HomeIcon }[] = [
   { id: "customers", label: "Customers", icon: UsersIcon },
   { id: "rateMatrix", label: "Rate Matrix", icon: MapPinIcon },
   { id: "settlements", label: "Settlements", icon: ReceiptIcon },
+  { id: "logs", label: "Logs", icon: ListIcon },
   { id: "tools", label: "Tools", icon: ToolIcon },
   // Preparatory view for the GPS/live-tracking feature (vehicle_locations on
   // Supabase, gps-ingest Edge Function — see BRAINS/PLANS.md ROP006). Fully

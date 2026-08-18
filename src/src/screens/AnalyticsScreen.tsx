@@ -17,6 +17,7 @@ import { buildVehicleAnalytics } from "../lib/vehicleAnalytics";
 import { buildDestinationHistory } from "../lib/destinationHistory";
 import { buildBookingCorroboration, summarizeCorroboration } from "../lib/bookingGpsCorroboration";
 import { buildTrailMetrics } from "../lib/gpsTrailMetrics";
+import { buildGpsLogSheet } from "../lib/gpsLogSheet";
 import { hqLocationKey, computeHqDisplacement } from "../lib/hqDistance";
 import { bookingRef } from "../lib/bookingRef";
 import { MiniBarChart, MiniLineChart, type ChartPoint } from "../components/MiniChart";
@@ -308,6 +309,36 @@ export default function AnalyticsScreen() {
   // replacement for it.
   const loggedMileageTotal = useMemo(() => mileageChartData.reduce((sum, p) => sum + p.value, 0), [mileageChartData]);
 
+  // Log sheet — same date-range-filtered entries as the trail metrics
+  // above, but run through lib/gpsLogSheet.ts's point-to-adjacent-point
+  // math (GPS Log > Log sheet) instead of trailMetrics' gap-skipping one,
+  // so these two charts show the exact same numbers that tab's table does.
+  // Rows with nothing to compute (no previous point, or either point
+  // missing coordinates) are simply left out of each chart rather than
+  // plotted as zero.
+  const logSheetRows = useMemo(() => {
+    const inRange = gpsEntries.filter(
+      (e) => (!dateFrom || e.reading_at.slice(0, 10) >= dateFrom) && (!dateTo || e.reading_at.slice(0, 10) <= dateTo),
+    );
+    return buildGpsLogSheet(inRange);
+  }, [gpsEntries, dateFrom, dateTo]);
+
+  const logSheetDistanceChart: ChartPoint[] = useMemo(
+    () =>
+      logSheetRows
+        .filter((r) => r.distanceKm != null)
+        .map((r) => ({ label: formatDate(r.entry.reading_at, settings), value: r.distanceKm as number })),
+    [logSheetRows, settings],
+  );
+
+  const logSheetSpeedChart: ChartPoint[] = useMemo(
+    () =>
+      logSheetRows
+        .filter((r) => r.speedKmh != null)
+        .map((r) => ({ label: formatDate(r.entry.reading_at, settings), value: r.speedKmh as number })),
+    [logSheetRows, settings],
+  );
+
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
 
   return (
@@ -540,6 +571,28 @@ export default function AnalyticsScreen() {
                   emptyMessage="Not enough GPS points with coordinates to estimate a trail yet."
                 />
               </>
+            )}
+          </Section>
+
+          <Section title="GPS log sheet — distance &amp; speed per point">
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+              The digitized GPS log sheet (Tools &gt; GPS Log &gt; Log sheet), charted — each point's distance
+              and speed relative to the point directly before it, rather than the nearest coordinate-having one.
+              Points with nothing to compare against are left off rather than plotted as zero.
+            </p>
+            {mileageLoading ? (
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>Loading…</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div>
+                  <p className="mb-1.5 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Distance between points</p>
+                  <MiniLineChart data={logSheetDistanceChart} color="#0EA5E9" valueFormatter={(n) => `${n.toFixed(1)} km`} emptyMessage="No point-to-point distances yet." />
+                </div>
+                <div>
+                  <p className="mb-1.5 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Speed between points</p>
+                  <MiniLineChart data={logSheetSpeedChart} color="#F97316" valueFormatter={(n) => `${Math.round(n)} km/h`} emptyMessage="No point-to-point speeds yet." />
+                </div>
+              </div>
             )}
           </Section>
 

@@ -326,11 +326,11 @@ export default function ArrivalDialog({ kind, mode, scheduledIso, departedAtIso,
                 </p>
               )}
               <label className="mt-2 block text-sm" style={{ color: "var(--text-secondary)" }}>
-                Additional payment collected
+                Amount collected now
                 <input
                   className="mt-1 w-full rounded-md px-3 py-2 text-base"
                   style={{ border: "0.5px solid var(--border-strong)", background: "var(--surface-1)", color: "var(--text-primary)" }}
-                  placeholder="Amount collected for overtime"
+                  placeholder="Leave blank to leave it outstanding"
                   value={additionalPayment}
                   onChange={(e) => setAdditionalPayment(e.target.value)}
                 />

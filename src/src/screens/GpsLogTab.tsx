@@ -1,12 +1,19 @@
 import { useState } from "react";
 import GpsLocationsTab from "./GpsLocationsTab";
 import MileageTab from "./MileageTab";
+import GpsLogSheetTab from "./GpsLogSheetTab";
 
-type GpsSubtab = "locations" | "mileage";
+type GpsSubtab = "locations" | "mileage" | "logsheet";
 
 // ROP011 follow-up — GPS Log split into Locations (point-in-time pins) and
 // Mileage (period-based figures, hand-copied from Traccar for now). Same
 // nested-subtab pattern as EntriesScreen itself.
+//
+// Log sheet is a read-only third view over the same Locations data — the
+// digitized "VEHICLES GPS LOG" paper sheet (Points/Time/Location/Park
+// time/Estimated distance/Estimated speed), see lib/gpsLogSheet.ts. No new
+// schema, no new writes — it's Locations' own entries, numbered and
+// point-to-point calculated.
 export default function GpsLogTab() {
   const [subtab, setSubtab] = useState<GpsSubtab>("locations");
 
@@ -17,6 +24,7 @@ export default function GpsLogTab() {
           [
             { id: "locations", label: "Locations" },
             { id: "mileage", label: "Mileage" },
+            { id: "logsheet", label: "Log sheet" },
           ] as { id: GpsSubtab; label: string }[]
         ).map((t) => (
           <button
@@ -36,6 +44,7 @@ export default function GpsLogTab() {
 
       {subtab === "locations" && <GpsLocationsTab />}
       {subtab === "mileage" && <MileageTab />}
+      {subtab === "logsheet" && <GpsLogSheetTab />}
     </div>
   );
 }

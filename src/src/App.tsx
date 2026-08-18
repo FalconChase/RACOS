@@ -17,10 +17,11 @@ import RateMatrixScreen from "./screens/RateMatrixScreen";
 import RegistryScreen from "./screens/RegistryScreen";
 import SettlementsScreen from "./screens/SettlementsScreen";
 import ToolsScreen from "./screens/ToolsScreen";
+import LogsHubScreen from "./screens/LogsHubScreen";
 import MapScreen from "./screens/MapScreen";
 import AnalyticsScreen from "./screens/AnalyticsScreen";
 
-export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "tools" | "map" | "analytics" | "settings";
+export type Tab = "home" | "vehicles" | "customers" | "bookings" | "rateMatrix" | "registry" | "settlements" | "logs" | "tools" | "map" | "analytics" | "settings";
 
 type AuthState =
   | { status: "checking" }
@@ -157,6 +158,7 @@ function App() {
               {tab === "rateMatrix" && <RateMatrixScreen />}
               {tab === "registry" && <RegistryScreen />}
               {tab === "settlements" && <SettlementsScreen />}
+              {tab === "logs" && <LogsHubScreen />}
               {tab === "tools" && <ToolsScreen />}
               {tab === "map" && <MapScreen />}
               {tab === "analytics" && <AnalyticsScreen />}
