@@ -2,7 +2,7 @@
 
 Reference doc for cross-checking what's actually in the app against what's actually in the database. Organized per tab/screen — the same table is listed again in full wherever it's used, rather than making you jump around. Local = SQLite (`src/src-tauri/migrations/`), Cloud = Supabase (`supabase/migrations/` + live project `nnsjqnxvpkercbbwvqjj`). Money fields are stored as exact decimal **text**, not numbers, to avoid float rounding.
 
-Last compiled: 2026-08-18 (SES020), cross-checked directly against all local migration files through 0055 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below; `destination_geocodes`/`overtime_waived_at`/`time_step_minutes` are local-only, no Cloud counterpart planned).
+Last compiled: 2026-08-19 (SES021), cross-checked directly against all local migration files through 0058 (not re-verified against live Supabase schema this pass — see fuel_level_entries/booking_legs Cloud migrations noted below; `destination_geocodes`/`overtime_waived_at`/`time_step_minutes`/`municipalities.is_capital` are local-only, no Cloud counterpart planned).
 
 **`DateTimePicker.tsx`** (SES020, ROT050) — combined date+time popup replacing every DatePicker+TimePicker pair app-wide (New rental's Out/Due back + each leg's Due back, ArrivalDialog's custom time, EditBookingTimesDialog's Actual return, and — as of the same-session follow-up — the Agreement executed field on both New rental's Summary step and `EditAgreementDateDialog`, upgraded from date-only to date+time). Single continuous auto-advancing flow: calendar step → hour dial → minute dial → closes, no back-navigation. Circular clock-face dial for both hour (12-position ring + AM/PM toggle in 12h mode; two concentric rings 0-11/12-23 in 24h mode) and minute (marks spaced per `settings.timeStepMinutes`, capped at 12 visible marks — a 1-minute setting still shows 5-minute marks on the dial itself). Remittances period filter is the one remaining plain-`DatePicker` field (genuinely date-only, no time meaning); the native `datetime-local` inputs in the log-entry screens (Analytics/FuelLevel/GpsLocations/Map/MapTrailRecorder/Mileage/OdometerLog tabs) are a different pattern, left alone. `TimePicker.tsx` and the standalone `DatePicker.tsx` usage in BookingsScreen are now unused there (left in place, not deleted) — `DatePicker.tsx` itself is still used elsewhere (e.g. Remittances).
 
@@ -50,6 +50,7 @@ Last compiled: 2026-08-18 (SES020), cross-checked directly against all local mig
 | status | text | pending / confirmed / active / completed / cancelled — **derived**, never set directly (ROD010) |
 | destination_province_id | text \| null FK → provinces | primary destination, drives pricing tier |
 | destination_city_id | text \| null FK → municipalities | optional, also matches custom rate overrides |
+| destination_region_name | text \| null | SES021, migration 0056 (local+Cloud), ROT052 — set instead of `destination_province_id`/`destination_city_id` when staff picks a whole region (e.g. "CARAGA") via `HybridLocationSearch`'s region entries, for a client with no particular place in mind; priced via `computeTierFromRegion()` (Formulas), displayed via `destinationLabel()`'s region fallback, resolved to a Map pin via `region_representative_points` (see Map section) |
 | destination_note | text \| null | per-destination free note (SES017, migration 0043) |
 | purpose | text \| null | free-form, display-only, defaults "Service" |
 | payment_status | text | `paid` \| `receivable` (SES017, migration 0039) — replaces the old free-text "not yet paid" note |
@@ -364,7 +365,18 @@ RLS: select-only via `business_id = current_business_id()` — no insert/update/
 
 **HQ pin** (Map, SES018) — a permanent gold-star marker (always visible, independent of the Destination-history toggle) at `business_profile.hq_province_id/hq_city_id`'s geocoded location, resolved through the same `destination_geocodes` cache (ROD029, no separate precise-pin mechanism). `lib/hqDistance.ts` (`computeHqDisplacement`) appends a "N km from HQ (Tier X)" line to destination-history and booking-target popups, using `haversineKm` (`lib/geo.ts`) + the existing `computeTier` (Rate Matrix).
 
-**Compare booking vs GPS Log** (Map dropdown, SES018) — pick one of the selected vehicle's bookings to see an orange bullseye pin at its (on-demand geocoded) destination plus green-circled highlights around GPS Log points that fall inside that booking's actual window; backed by `lib/bookingGpsCorroboration.ts` (see Formulas, ROD028).
+**Compare booking vs GPS Log** (Map dropdown, SES018) — pick one of the selected vehicle's bookings to see an orange bullseye pin at its (on-demand geocoded) destination plus green-circled highlights around GPS Log points that fall inside that booking's actual window; backed by `lib/bookingGpsCorroboration.ts` (see Formulas, ROD028). For a region-picked booking (`destination_region_name` set, no province id, SES021/ROT052) this resolves and pins its `region_representative_points` entry instead (see below) — same popup mechanics, no other change.
+
+**region_representative_points** (Local + Cloud, SES021, migration 0058, ROT052, ROD031) — one row per `(business_id, region_name)`, upserted in place on re-resolve. Caches the "representative point" for a region-level destination pick: the *farthest* province in the region from HQ (worst-case distance, not average/nearest), resolved lazily (`lib/repo/regionRepresentativePoints.ts`, `resolveRegionRepresentativePoint()`) only when Map/Analytics actually need to draw something — never at booking-save time.
+| Column | Type | Notes |
+|---|---|---|
+| business_id, region_name | text PK/PK | |
+| hq_location_key | text | snapshot of `buildLocationKey(hq_province_id, hq_city_id)` at resolve time — a mismatch against HQ's *current* location means HQ moved since, so the next read lazily re-resolves rather than needing an active invalidation hook wired into Settings |
+| province_id | text FK → provinces | the farthest province, ranked via `haversineKm` against every candidate province's own geocoded center (never a capital's position, so a capital near a border can't skew the pick) |
+| municipality_id | text \| null FK → municipalities | the province's capital, if `is_capital` flags one (see above); null falls back to the plain province name |
+| display_name, latitude, longitude | text/real/real | re-shaped as a `DestinationGeocode` (`asDestinationGeocode()`) for drop-in reuse by every existing Map/Analytics render path — `location_key` uses a `region:{name}` namespace so it can never collide with a real province/city key |
+| resolved_at | text (ISO) | |
+The heavy lifting (per-province Nominatim geocoding) reuses the existing `destination_geocodes` pipeline entirely and stays local-only (ROD026) — only this small finished answer syncs to Cloud (staff-only, same upsertable-cache precedent as `gps_location_labels`), so a second device never has to redo the geocoding for the same region.
 
 ---
 
@@ -411,7 +423,7 @@ No new tables — a read-only, per-vehicle computed view (vehicle picker + date 
 | Table | Scope | Used by |
 |---|---|---|
 | provinces | Local, global | Rate Matrix, booking destination, owner address, HQ |
-| municipalities | Local, global | same as above, finer-grained |
+| municipalities | Local, global | same as above, finer-grained. `is_capital` (integer, migration 0057, SES021) — static PSGC/DILG reference flag, one per province, HQ-agnostic; feeds the region representative-point label (see Map) |
 | outbox | Local, device | every write to vehicles/customers/bookings/payments/owners queues here; feeds the "N pending sync" badge. **Not scoped by business_id** — see caveat below. |
 | sync_state | Local, one row per business | `last_synced_at`, `offline_since` — feeds the ROD004 free-tier threshold (5 days offline OR 50 unsynced records) |
 | session_cache | Local, single row, device | ROT007 — cached `business_id`/`profile_id`/`email` so the app can boot offline after at least one real online sign-in |
@@ -477,6 +489,7 @@ No half-day/nightly rounding is ever applied to billing — half-day/nights/days
 **Rate resolution priority** (`resolveRate`):
 1. Custom rate — exact `(destination_city_id, seating_band)` match in `custom_rates`.
 2. Standard Rate Matrix — `(seating_band, tier)` cell in `rate_matrix`, where tier = `computeTier(destination_province, hq_province)`: 1 = same province, 2 = same region, 3 = other.
+2b. Region-level pick (SES021, ROT052) — when `destination_region_name` is set instead of a province/city, `computeTierFromRegion()` (`lib/pricing.ts`) does a plain region-name string compare against HQ's own province's region (no coordinates, fully offline): same region → Tier 2, different region → Tier 3. Tier 1 is never reachable via a region-only pick by definition (same province as HQ can't be expressed as "just a region").
 3. Vehicle's own `daily_rate` — last-resort fallback.
 
 `resolved_rate` locks in whichever rate applied at booking creation time, so later Rate Matrix edits don't retroactively change a past booking's numbers.
