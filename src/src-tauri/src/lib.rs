@@ -346,6 +346,18 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0056_booking_destination_region.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 57,
+            description: "municipalities_is_capital",
+            sql: include_str!("../migrations/0057_municipalities_is_capital.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 58,
+            description: "region_representative_points",
+            sql: include_str!("../migrations/0058_region_representative_points.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

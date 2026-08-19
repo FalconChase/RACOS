@@ -209,6 +209,10 @@ const CONFLICT_KEY: Record<OutboxTable, string> = {
   booking_legs: "id",
   customer_contacts: "id",
   booking_payment_entries: "id",
+  // Composite Cloud PK (business_id, region_name) — onConflict takes a
+  // comma-separated column list, unlike every other table here whose PK is
+  // just "id".
+  region_representative_points: "business_id,region_name",
 };
 
 async function ensureOwnerMirrored(db: Database, ownerId: string): Promise<void> {
@@ -433,6 +437,22 @@ async function mapToCloudShape(
         note: local.note,
         created_at: local.created_at,
         updated_at: local.updated_at,
+      };
+
+    // ROT052 Phase 2 — one row per (business, region); a re-resolve
+    // overwrites in place (region_name conflict key above), same
+    // upsertable-cache shape as gps_location_labels.
+    case "region_representative_points":
+      return {
+        business_id: local.business_id,
+        region_name: local.region_name,
+        hq_location_key: local.hq_location_key,
+        province_id: local.province_id,
+        municipality_id: local.municipality_id,
+        display_name: local.display_name,
+        latitude: local.latitude,
+        longitude: local.longitude,
+        resolved_at: local.resolved_at,
       };
   }
 }

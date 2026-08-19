@@ -9,6 +9,7 @@ import { listAllBookingLegs } from "../lib/repo/bookingLegs";
 import { listCustomers } from "../lib/repo/customers";
 import { getBusinessProfile, listMunicipalities, listProvinces } from "../lib/repo/locations";
 import { listDestinationGeocodes, resolveDestinationGeocodes, geocodeDestination, buildLocationKey } from "../lib/repo/destinationGeocodes";
+import { resolveRegionRepresentativePoint, buildRegionLocationKey } from "../lib/repo/regionRepresentativePoints";
 import { buildDestinationHistory, type DestinationHistoryPoint } from "../lib/destinationHistory";
 import { buildBookingCorroboration, type BookingCorroboration } from "../lib/bookingGpsCorroboration";
 import { hqLocationKey, computeHqDisplacement } from "../lib/hqDistance";
@@ -472,33 +473,64 @@ export default function MapScreen() {
 
   const selectedBookingLocationKey = selectedBooking?.destination_province_id
     ? buildLocationKey(selectedBooking.destination_province_id, selectedBooking.destination_city_id)
-    : null;
+    : selectedBooking?.destination_region_name
+      ? buildRegionLocationKey(selectedBooking.destination_region_name)
+      : null;
   const selectedBookingGeocode = selectedBookingLocationKey ? geocodes[selectedBookingLocationKey] : null;
 
   // Resolves the selected booking's destination on demand — a single
   // lookup, not the paced batch Destination history runs, since this is
   // one specific place the person just asked to compare, not "everything".
+  // A region-level pick (ROT052 Phase 2) resolves its cached/computed
+  // "representative point" instead of a direct province/city geocode —
+  // needs HQ already resolved (hqGeocode), since the representative point
+  // is defined relative to HQ (farthest province in the region from it).
   useEffect(() => {
-    if (!selectedBooking || !selectedBooking.destination_province_id || selectedBookingGeocode) return;
+    if (!selectedBooking || selectedBookingGeocode) return;
     let cancelled = false;
-    setBookingGeocodeLoading(true);
-    setBookingGeocodeError(null);
-    geocodeDestination(selectedBooking.destination_province_id, selectedBooking.destination_city_id, provinces, municipalities)
-      .then((geocode) => {
-        if (cancelled) return;
-        setGeocodes((prev) => ({ ...prev, [geocode.location_key]: geocode }));
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setBookingGeocodeError(err instanceof Error ? err.message : "Couldn't resolve this destination.");
-      })
-      .finally(() => {
-        if (!cancelled) setBookingGeocodeLoading(false);
-      });
+
+    if (selectedBooking.destination_province_id) {
+      setBookingGeocodeLoading(true);
+      setBookingGeocodeError(null);
+      geocodeDestination(selectedBooking.destination_province_id, selectedBooking.destination_city_id, provinces, municipalities)
+        .then((geocode) => {
+          if (cancelled) return;
+          setGeocodes((prev) => ({ ...prev, [geocode.location_key]: geocode }));
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) setBookingGeocodeError(err instanceof Error ? err.message : "Couldn't resolve this destination.");
+        })
+        .finally(() => {
+          if (!cancelled) setBookingGeocodeLoading(false);
+        });
+    } else if (selectedBooking.destination_region_name && hqGeocode && businessProfile?.hq_province_id) {
+      setBookingGeocodeLoading(true);
+      setBookingGeocodeError(null);
+      resolveRegionRepresentativePoint(
+        selectedBooking.destination_region_name,
+        hqGeocode,
+        businessProfile.hq_province_id,
+        businessProfile.hq_city_id,
+        provinces,
+        municipalities,
+      )
+        .then((geocode) => {
+          if (cancelled) return;
+          setGeocodes((prev) => ({ ...prev, [geocode.location_key]: geocode }));
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) setBookingGeocodeError(err instanceof Error ? err.message : "Couldn't resolve this region's representative point.");
+        })
+        .finally(() => {
+          if (!cancelled) setBookingGeocodeLoading(false);
+        });
+    }
+
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBooking, selectedBookingGeocode, provinces, municipalities]);
+  }, [selectedBooking, selectedBookingGeocode, provinces, municipalities, hqGeocode, businessProfile]);
 
   // Redraw the comparison layer — the booked-destination pin plus a
   // highlight ring around whichever GPS trail markers actually corroborate

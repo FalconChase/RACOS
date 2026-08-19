@@ -429,6 +429,12 @@ export interface Municipality {
   id: string;
   province_id: string;
   name: string;
+  // ROT052 Phase 2, migration 0057 — flags this province's capital, static
+  // PSGC reference data (same for every business). Feeds the display name
+  // for a region-level destination's resolved representative point (see
+  // RegionRepresentativePoint) — never anything else. SQLite has no real
+  // boolean type, so this reads back as 0/1.
+  is_capital: number;
 }
 
 // --- ROP011: odometer + manual GPS logs -----------------------------------
@@ -507,6 +513,28 @@ export interface DestinationGeocode {
   latitude: number;
   longitude: number;
   raw_response: unknown | null;
+  resolved_at: string;
+}
+
+// ROT052 Phase 2 — the resolved "representative point" for a region-level
+// destination pick: the farthest province within that region from HQ (plus
+// its capital municipality, if flagged — see Municipality.is_capital),
+// cached per region rather than per booking (see
+// lib/repo/regionRepresentativePoints.ts). Unlike DestinationGeocode, this
+// small finished answer DOES sync to Cloud — the heavy per-province
+// geocoding it's built from stays entirely local either way. hq_location_key
+// is what this was resolved against (buildLocationKey(hq_province_id,
+// hq_city_id)) — a mismatch against the business's current HQ means the row
+// is stale and due for a lazy re-resolve on next read.
+export interface RegionRepresentativePoint {
+  business_id: string;
+  region_name: string;
+  hq_location_key: string;
+  province_id: string;
+  municipality_id: string | null;
+  display_name: string;
+  latitude: number;
+  longitude: number;
   resolved_at: string;
 }
 
