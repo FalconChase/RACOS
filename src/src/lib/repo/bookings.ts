@@ -129,6 +129,11 @@ export interface NewBookingInput {
   destination_province_id?: string;
   // Optional finer-grained destination, and what a custom rate matches on.
   destination_city_id?: string;
+  // ROT052 — set instead of the two above for a region-level pick (no
+  // particular place). Mutually exclusive with destination_province_id/
+  // destination_city_id — the booking form only ever sends one or the
+  // other. See Booking.destination_region_name.
+  destination_region_name?: string;
   // Optional free-text note on the primary destination. See destination_note
   // on the Booking type.
   destination_note?: string;
@@ -223,6 +228,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
     status,
     destination_province_id: input.destination_province_id ?? null,
     destination_city_id: input.destination_city_id ?? null,
+    destination_region_name: input.destination_region_name ?? null,
     destination_note: input.destination_note ?? null,
     payment_amount: input.payment_amount ?? null,
     expected_payment: input.expected_payment ?? null,
@@ -259,10 +265,10 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
   await db.execute(
     `insert into bookings
        (id, business_id, vehicle_id, customer_id, start_date, end_date, status, destination_province_id,
-        destination_city_id, destination_note, payment_amount, expected_payment, purpose, created_by,
+        destination_city_id, destination_region_name, destination_note, payment_amount, expected_payment, purpose, created_by,
         pending_availability_check, actual_return_at, actual_departure_at, resolved_rate,
         remittance_split_override, payment_status, paid_at, agreement_executed_at, created_at, updated_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       booking.id,
       booking.business_id,
@@ -273,6 +279,7 @@ export async function createBooking(input: NewBookingInput): Promise<Booking> {
       booking.status,
       booking.destination_province_id,
       booking.destination_city_id,
+      booking.destination_region_name,
       booking.destination_note,
       booking.payment_amount,
       booking.expected_payment,

@@ -340,6 +340,12 @@ fn local_db_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0055_booking_payment_entries_drop_label.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 56,
+            description: "booking_destination_region",
+            sql: include_str!("../migrations/0056_booking_destination_region.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

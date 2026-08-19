@@ -1,0 +1,14 @@
+-- ROT052 — region-level destination pick. Sometimes a client has no
+-- particular place in mind, just a general area (e.g. "somewhere in
+-- CARAGA") — this lets the New rental wizard's destination search box
+-- offer a whole region as a result alongside real city/province matches,
+-- without touching destination_province_id/destination_city_id at all
+-- (those stay genuinely null for a region pick, never conflated with a
+-- client's actual specific-place choice). Tier/pricing for a region pick
+-- is computed by a plain region_name string-compare against HQ's own
+-- region (see lib/pricing.ts computeTierFromRegion) — no coordinates, no
+-- geocoding, fully offline. Map/Analytics visualization (representative
+-- farthest-point resolution) is intentionally NOT part of this migration
+-- — scoped out per Falcon's "surgical" ask, see PLANS.md ROP014 for the
+-- deferred follow-up.
+alter table bookings add column destination_region_name text;

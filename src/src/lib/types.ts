@@ -220,6 +220,15 @@ export interface Booking {
   // Optional finer-grained destination — a specific registered city/municipality
   // within destination_province_id. Also what a custom rate override matches on.
   destination_city_id: string | null;
+  // ROT052, migration 0056 — set instead of destination_province_id/city_id
+  // when staff pick a whole region (e.g. "CARAGA") rather than a specific
+  // place, for a client with no particular destination in mind. Mutually
+  // exclusive with destination_province_id/city_id (never both set) —
+  // Tier/pricing falls back to a plain region-name compare against HQ's own
+  // region (see lib/pricing.ts computeTierFromRegion) rather than needing
+  // coordinates. Map/Analytics representative-point resolution is a
+  // separate, not-yet-built follow-up — see PLANS.md ROP014.
+  destination_region_name: string | null;
   // Optional free-text note on the primary destination — a pickup point,
   // gate code, contact person, etc. Purely informational, same spirit as
   // purpose. Each extra leg (see BookingLeg) has its own independent note.

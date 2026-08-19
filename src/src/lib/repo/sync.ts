@@ -291,6 +291,7 @@ async function mapToCloudShape(
         db,
         local.destination_province_id as string | null,
         local.destination_city_id as string | null,
+        local.destination_region_name as string | null,
       );
       return {
         id: local.id,
@@ -440,8 +441,12 @@ async function resolveDestinationLabel(
   db: Database,
   provinceId: string | null | undefined,
   cityId: string | null | undefined,
+  // ROT052 — a region-level pick has no provinceId at all; fall back to the
+  // plain region name so the Owners' Portal Activity log still shows
+  // something meaningful instead of a blank destination.
+  regionName?: string | null,
 ): Promise<string | null> {
-  if (!provinceId) return null;
+  if (!provinceId) return regionName ? `${regionName} (region)` : null;
   const provinceRows = await db.select<{ name: string }[]>(
     "select name from provinces where id = ?",
     [provinceId],

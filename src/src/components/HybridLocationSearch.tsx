@@ -13,11 +13,22 @@ interface HybridLocationSearchProps {
   // dropdown too on a province-only pick).
   onSelect: (provinceId: string, cityId: string | null) => void;
   placeholder?: string;
+  // ROT052 — when set, every distinct region (provinces.region_name, same
+  // island-group visibility filter as the city/province entries) is also
+  // offered as its own searchable result, for a client with no particular
+  // place in mind ("somewhere in CARAGA"). Off by default — only the New
+  // rental Destination step opts in; address pickers (Profile/Customers)
+  // don't, since an address needs a real place. onSelectRegion is required
+  // when this is true.
+  includeRegions?: boolean;
+  onSelectRegion?: (regionName: string) => void;
 }
 
 interface SearchEntry {
-  provinceId: string;
+  kind: "city" | "province" | "region";
+  provinceId: string | null;
   cityId: string | null;
+  regionName: string | null;
   label: string; // display label, e.g. "Davao City, Davao del Sur" or "Davao del Sur"
   searchLabel: string; // lowercase, for matching
 }
@@ -67,6 +78,8 @@ export default function HybridLocationSearch({
   settings,
   onSelect,
   placeholder,
+  includeRegions,
+  onSelectRegion,
 }: HybridLocationSearchProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -84,18 +97,34 @@ export default function HybridLocationSearch({
       .map((m) => {
         const province = provinceById.get(m.province_id);
         const label = province ? `${m.name}, ${province.name}` : m.name;
-        return { provinceId: m.province_id, cityId: m.id, label, searchLabel: label.toLowerCase() };
+        return { kind: "city" as const, provinceId: m.province_id, cityId: m.id, regionName: null, label, searchLabel: label.toLowerCase() };
       });
 
     const provinceEntries: SearchEntry[] = visibleProvinces.map((p) => ({
+      kind: "province" as const,
       provinceId: p.id,
       cityId: null,
+      regionName: null,
       label: p.name,
       searchLabel: p.name.toLowerCase(),
     }));
 
-    return [...cityEntries, ...provinceEntries];
-  }, [provinces, municipalities, settings]);
+    // ROT052 — one entry per distinct region among the currently-visible
+    // provinces (same island-group filter), so typing "Caraga" surfaces the
+    // region itself alongside any real place matches.
+    const regionEntries: SearchEntry[] = includeRegions
+      ? [...new Set(visibleProvinces.map((p) => p.region_name))].map((regionName) => ({
+          kind: "region" as const,
+          provinceId: null,
+          cityId: null,
+          regionName,
+          label: regionName,
+          searchLabel: regionName.toLowerCase(),
+        }))
+      : [];
+
+    return [...cityEntries, ...provinceEntries, ...regionEntries];
+  }, [provinces, municipalities, settings, includeRegions]);
 
   const results = useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -140,7 +169,11 @@ export default function HybridLocationSearch({
   }
 
   function select(entry: SearchEntry) {
-    onSelect(entry.provinceId, entry.cityId);
+    if (entry.kind === "region" && entry.regionName) {
+      onSelectRegion?.(entry.regionName);
+    } else if (entry.provinceId) {
+      onSelect(entry.provinceId, entry.cityId);
+    }
     setQuery("");
     setOpen(false);
   }
@@ -186,14 +219,16 @@ export default function HybridLocationSearch({
               results.map((entry) => (
                 <button
                   type="button"
-                  key={`${entry.provinceId}-${entry.cityId ?? "province"}`}
+                  key={`${entry.kind}-${entry.provinceId ?? entry.regionName}-${entry.cityId ?? ""}`}
                   onClick={() => select(entry)}
                   className="flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm"
                   style={{ color: "var(--text-primary)" }}
                 >
                   <span>{entry.label}</span>
-                  {!entry.cityId && (
-                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>Province</span>
+                  {entry.kind !== "city" && (
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                      {entry.kind === "region" ? "Region — no particular place" : "Province"}
+                    </span>
                   )}
                 </button>
               ))

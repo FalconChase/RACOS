@@ -16,6 +16,21 @@ export function computeTier(
   return 3;
 }
 
+// Tier for a region-level destination pick (ROT052) — no coordinates
+// involved, just a plain region_name compare against HQ's own province's
+// region, same string HQ/destination provinces already carry. Tier 1 is
+// never reachable this way by definition (picking a whole region means the
+// client didn't specify HQ's own exact province) — only 2 or 3.
+export function computeTierFromRegion(
+  destinationRegionName: string,
+  hqProvinceId: string,
+  provinces: Province[],
+): Tier | null {
+  const hq = provinces.find((p) => p.id === hqProvinceId);
+  if (!hq) return null;
+  return destinationRegionName === hq.region_name ? 2 : 3;
+}
+
 export function findSeatingBand(seats: number, bands: SeatingBand[]): SeatingBand | null {
   return bands.find((b) => seats >= b.min_seats && (b.max_seats == null || seats <= b.max_seats)) ?? null;
 }
@@ -73,6 +88,10 @@ export interface ResolveRateInput {
   vehicle: Vehicle;
   destinationProvinceId: string | null;
   destinationCityId: string | null;
+  // ROT052 — set instead of destinationProvinceId when a region-level pick
+  // was made (see Booking.destination_region_name). Only ever consulted
+  // when destinationProvinceId is null.
+  destinationRegionName?: string | null;
   hqProvinceId: string | null;
   provinces: Province[];
   seatingBands: SeatingBand[];
@@ -90,6 +109,7 @@ export function resolveRate(input: ResolveRateInput): ResolvedRate | null {
     vehicle,
     destinationProvinceId,
     destinationCityId,
+    destinationRegionName,
     hqProvinceId,
     provinces,
     seatingBands,
@@ -109,6 +129,19 @@ export function resolveRate(input: ResolveRateInput): ResolvedRate | null {
 
   if (destinationProvinceId && hqProvinceId && band) {
     const tier = computeTier(destinationProvinceId, hqProvinceId, provinces);
+    if (tier) {
+      const row = rateMatrix.find((r) => r.seating_band_id === band.id);
+      const cell = row ? (tier === 1 ? row.rate_tier1 : tier === 2 ? row.rate_tier2 : row.rate_tier3) : null;
+      if (cell) {
+        return { rate: cell, basis: "matrix", tier, band };
+      }
+    }
+  }
+
+  // ROT052 — a region-level pick (no specific province/city) prices the
+  // exact same way, just off a name compare instead of a province id.
+  if (!destinationProvinceId && destinationRegionName && hqProvinceId && band) {
+    const tier = computeTierFromRegion(destinationRegionName, hqProvinceId, provinces);
     if (tier) {
       const row = rateMatrix.find((r) => r.seating_band_id === band.id);
       const cell = row ? (tier === 1 ? row.rate_tier1 : tier === 2 ? row.rate_tier2 : row.rate_tier3) : null;

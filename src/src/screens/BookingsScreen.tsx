@@ -12,7 +12,7 @@ import { bookingRef } from "../lib/bookingRef";
 import { useSettings } from "../lib/settingsContext";
 import { formatDate, formatDateTime } from "../lib/dateFormat";
 import { exactHoursBetween, formatDuration, formatHoursMinutes } from "../lib/duration";
-import { computeTier, findSeatingBand, resolveBookingRate, resolveRate } from "../lib/pricing";
+import { computeTier, computeTierFromRegion, findSeatingBand, resolveBookingRate, resolveRate } from "../lib/pricing";
 import { isProvinceVisible } from "../lib/islandGroups";
 import DateTimePicker from "../components/DateTimePicker";
 import SearchableSelect from "../components/SearchableSelect";
@@ -202,6 +202,11 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   }, [step]);
   const [destinationProvinceId, setDestinationProvinceId] = useState("");
   const [destinationCityId, setDestinationCityId] = useState("");
+  // ROT052 — set instead of the two above when staff pick a whole region
+  // (no particular place) via the search box's region results. Mutually
+  // exclusive with destinationProvinceId/destinationCityId — picking either
+  // kind clears the other, enforced at every setter call site below.
+  const [destinationRegionName, setDestinationRegionName] = useState("");
   // Optional free-text note on the primary destination — see
   // Booking.destination_note.
   const [destinationNote, setDestinationNote] = useState("");
@@ -316,11 +321,12 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   // Same province+municipality label shape as lib/destinationLabel.ts, just
   // working off the draft form's camelCase province/city ids directly
   // instead of a saved Booking row.
-  function provinceCityLabel(provinceId: string, cityId: string): string {
+  function provinceCityLabel(provinceId: string, cityId: string, regionName?: string): string {
     const province = provinces.find((p) => p.id === provinceId);
     const municipality = municipalities.find((m) => m.id === cityId);
     if (municipality && province) return `${municipality.name}, ${province.name}`;
     if (province) return province.name;
+    if (regionName) return `${regionName} (region — no particular place)`;
     return "—";
   }
 
@@ -418,11 +424,13 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   function selectTopDestination(m: Municipality) {
     setDestinationProvinceId(m.province_id);
     setDestinationCityId(m.id);
+    setDestinationRegionName("");
   }
 
   function handleDestinationProvinceChange(provinceId: string) {
     setDestinationProvinceId(provinceId);
     setDestinationCityId("");
+    setDestinationRegionName("");
   }
 
   // Computed silently in the background — exact hours x the resolved
@@ -434,13 +442,24 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       vehicle: selectedVehicle,
       destinationProvinceId: destinationProvinceId || null,
       destinationCityId: destinationCityId || null,
+      destinationRegionName: destinationRegionName || null,
       hqProvinceId: businessProfile?.hq_province_id ?? null,
       provinces,
       seatingBands,
       rateMatrix,
       customRates,
     });
-  }, [selectedVehicle, destinationProvinceId, destinationCityId, businessProfile, provinces, seatingBands, rateMatrix, customRates]);
+  }, [
+    selectedVehicle,
+    destinationProvinceId,
+    destinationCityId,
+    destinationRegionName,
+    businessProfile,
+    provinces,
+    seatingBands,
+    rateMatrix,
+    customRates,
+  ]);
 
   // Billed on the exact Out/Due back span (dailyRate / 24 x exact hours) — no
   // half-day or nightly rounding at all. Rounded UP to the nearest 50 so the
@@ -548,13 +567,12 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     () => (selectedBand ? rateMatrix.find((r) => r.seating_band_id === selectedBand.id) ?? null : null),
     [selectedBand, rateMatrix],
   );
-  const activeTier = useMemo(
-    () =>
-      destinationProvinceId && businessProfile?.hq_province_id
-        ? computeTier(destinationProvinceId, businessProfile.hq_province_id, provinces)
-        : null,
-    [destinationProvinceId, businessProfile, provinces],
-  );
+  const activeTier = useMemo(() => {
+    if (!businessProfile?.hq_province_id) return null;
+    if (destinationProvinceId) return computeTier(destinationProvinceId, businessProfile.hq_province_id, provinces);
+    if (destinationRegionName) return computeTierFromRegion(destinationRegionName, businessProfile.hq_province_id, provinces);
+    return null;
+  }, [destinationProvinceId, destinationRegionName, businessProfile, provinces]);
 
   // Rate for whichever booking is currently in the Mark-returned dialog —
   // feeds the Expected additional payment preview shown there when the
@@ -573,6 +591,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
     setOdometerKm("");
     setDestinationProvinceId("");
     setDestinationCityId("");
+    setDestinationRegionName("");
     setDestinationNote("");
     setPurpose(DEFAULT_PURPOSE);
     setCustomerId("");
@@ -612,6 +631,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       odometerKm.trim() ||
       destinationProvinceId ||
       destinationCityId ||
+      destinationRegionName ||
       destinationNote.trim() ||
       customerId ||
       newCustomerName.trim() ||
@@ -669,14 +689,14 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
   const stepValid = [
     isNewCustomer ? newCustomerName.trim().length > 0 : Boolean(customerId),
     Boolean(vehicleId) && !fuelLevelExceedsMax,
-    Boolean(destinationProvinceId) && Boolean(startDT) && Boolean(endDT) && !dateOrderInvalid && legsValid,
+    Boolean(destinationProvinceId || destinationRegionName) && Boolean(startDT) && Boolean(endDT) && !dateOrderInvalid && legsValid,
     paymentAmountValid,
   ];
 
   const canSubmit =
     Boolean(vehicleId) &&
     !fuelLevelExceedsMax &&
-    Boolean(destinationProvinceId) &&
+    Boolean(destinationProvinceId || destinationRegionName) &&
     Boolean(startDT) &&
     Boolean(endDT) &&
     !dateOrderInvalid &&
@@ -752,6 +772,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
       customer_id: finalCustomerId,
       destination_province_id: destinationProvinceId || undefined,
       destination_city_id: destinationCityId || undefined,
+      destination_region_name: !destinationProvinceId ? destinationRegionName || undefined : undefined,
       destination_note: destinationNote.trim() || undefined,
       start_date: startDT.toISOString(),
       // The *overall* due-back — the last leg's end once any exist, not just
@@ -1212,23 +1233,55 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                       provinces={provinces}
                       municipalities={municipalities}
                       settings={settings}
+                      includeRegions
                       onSelect={(provinceId, cityId) => {
                         setDestinationProvinceId(provinceId);
                         setDestinationCityId(cityId ?? "");
+                        setDestinationRegionName("");
                       }}
+                      onSelectRegion={(regionName) => {
+                        setDestinationRegionName(regionName);
+                        setDestinationProvinceId("");
+                        setDestinationCityId("");
+                      }}
+                      placeholder="Quick search — type a city, province, or region…"
                     />
-                    <SearchableSelect
-                      value={destinationProvinceId}
-                      onChange={handleDestinationProvinceChange}
-                      options={provinceOptions}
-                      placeholder="Search for a province…"
-                    />
-                    <SearchableSelect
-                      value={destinationCityId}
-                      onChange={setDestinationCityId}
-                      options={destinationMunicipalityOptions}
-                      placeholder={destinationProvinceId ? "City/municipality (optional)" : "Pick a province first"}
-                    />
+                    {destinationRegionName ? (
+                      // A region pick replaces the province/city dropdowns
+                      // below rather than sitting alongside them — there's
+                      // nothing more specific to narrow down to.
+                      <div
+                        className="flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm"
+                        style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}
+                      >
+                        <span>
+                          {destinationRegionName} <span style={{ color: "var(--text-muted)" }}>— no particular place{activeTier ? ` · Tier ${activeTier}` : ""}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setDestinationRegionName("")}
+                          className="text-xs font-medium"
+                          style={{ color: "var(--text-danger)" }}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <SearchableSelect
+                          value={destinationProvinceId}
+                          onChange={handleDestinationProvinceChange}
+                          options={provinceOptions}
+                          placeholder="Search for a province…"
+                        />
+                        <SearchableSelect
+                          value={destinationCityId}
+                          onChange={setDestinationCityId}
+                          options={destinationMunicipalityOptions}
+                          placeholder={destinationProvinceId ? "City/municipality (optional)" : "Pick a province first"}
+                        />
+                      </>
+                    )}
                   </div>
                   <div className="space-y-1 p-2" style={{ borderRight: "0.5px solid var(--border-strong)" }}>
                     <DateTimePicker
@@ -1458,7 +1511,7 @@ export default function BookingsScreen({ onCheckout, autoOpenForm, onAutoOpenCon
                 <div className="p-2.5" style={{ borderBottom: "0.5px solid var(--border-strong)" }}>
                   <div className="mb-1 text-xs font-semibold uppercase" style={labelStyle}>Destination</div>
                   <p className="text-base" style={{ color: "var(--text-primary)" }}>
-                    {provinceCityLabel(destinationProvinceId, destinationCityId)}
+                    {provinceCityLabel(destinationProvinceId, destinationCityId, destinationRegionName)}
                     {startDT && endDT
                       ? ` — ${formatDateTime(startDT.toISOString(), settings)} to ${formatDateTime(endDT.toISOString(), settings)}`
                       : ""}
